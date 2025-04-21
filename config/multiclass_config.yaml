@@ -1,0 +1,89 @@
+# Configuration for multi-class classification (37 breeds)
+
+# General settings
+experiment_name: "multiclass_classification"
+seed: 42
+device: "cuda"  # or "cpu"
+num_workers: 4
+
+# Data settings
+data:
+  dataset_path: "data/raw"
+  processed_path: "data/processed"
+  image_size: 224  # ResNet default input size
+  batch_size: 32
+  train_val_split: 0.8  # 80% training, 20% validation
+  
+  # Augmentation settings
+  augmentation:
+    use_augmentation: true
+    horizontal_flip: true
+    rotation_angle: 15
+    random_crop: true
+    color_jitter: true
+    random_erasing: false  # More aggressive augmentation
+    mixup: false           # Advanced augmentation
+    cutmix: false          # Advanced augmentation
+    prob: 0.5              # Probability of applying augmentations
+
+# Model settings
+model:
+  architecture: "resnet34"  # Options: resnet18, resnet34, resnet50
+  pretrained: true
+  num_classes: 37  # Multi-class: 37 breeds
+
+# Training settings
+training:
+  # Training strategy
+  strategy: "multi_layer"  # Options: last_layer, multi_layer, gradual_unfreeze
+  unfreeze_layers: 3       # Number of layers to unfreeze (for multi_layer)
+  
+  # Gradual unfreezing settings (only applicable if strategy is gradual_unfreeze)
+  gradual_unfreeze:
+    initial_layers: 1      # Start with this many layers unfrozen
+    unfreeze_every: 2      # Unfreeze another layer every N epochs
+  
+  # Multiple learning rates for different layer groups
+  layer_specific_lr:
+    enabled: true
+    base_lr: 0.0001        # For pre-trained layers
+    new_layers_lr: 0.001   # For newly added layers
+  
+  # Optimization settings
+  optimizer: "adamw"       # Options: adam, adamw, sgd
+  learning_rate: 0.001     # Base learning rate (if layer_specific_lr is disabled)
+  weight_decay: 0.01       # L2 regularization
+  momentum: 0.9            # Only for SGD
+  
+  # Training schedule
+  num_epochs: 30
+  early_stopping_patience: 5
+  
+  # Learning rate scheduler
+  lr_scheduler:
+    use_scheduler: true
+    type: "cosine"         # Options: step, cosine, reduce_on_plateau
+    step_size: 10          # For StepLR
+    gamma: 0.1             # Factor to reduce LR
+    
+  # Batch normalization updates
+  update_batch_norm: true
+  
+  # Class imbalance handling
+  class_imbalance:
+    enabled: false
+    strategy: "weighted_loss"  # Options: weighted_loss, oversampling, none
+    imbalance_ratio: 0.2       # For creating artificially imbalanced dataset
+  
+# Logging settings
+logging:
+  log_interval: 10        # Log every N batches
+  tensorboard: true
+  wandb: true
+  save_model: true
+  checkpoint_dir: "models/multiclass"
+  
+# Evaluation settings
+evaluation:
+  evaluate_every: 1       # Evaluate on validation set every N epochs
+  metrics: ["accuracy", "precision", "recall", "f1", "confusion_matrix", "per_class_accuracy"]

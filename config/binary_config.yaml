@@ -1,0 +1,68 @@
+# Configuration for binary classification (Dog vs Cat)
+
+# General settings
+experiment_name: "binary_classification"
+seed: 42
+device: "cuda"  # or "cpu"
+num_workers: 4
+
+# Data settings
+data:
+  dataset_path: "data/raw"
+  processed_path: "data/processed"
+  image_size: 224  # ResNet default input size
+  batch_size: 32
+  train_val_split: 0.8  # 80% training, 20% validation
+  
+  # Augmentation settings
+  augmentation:
+    use_augmentation: true
+    horizontal_flip: true
+    rotation_angle: 15
+    random_crop: true
+    color_jitter: true
+
+# Model settings
+model:
+  architecture: "resnet18"  # Options: resnet18, resnet34, resnet50
+  pretrained: true
+  num_classes: 2  # Binary: dog vs cat
+
+# Training settings
+training:
+  # Training strategy
+  strategy: "last_layer"  # Options: last_layer, multi_layer, gradual_unfreeze
+  unfreeze_layers: 1      # Number of layers to unfreeze (for multi_layer)
+  
+  # Optimization settings
+  optimizer: "adam"       # Options: adam, sgd
+  learning_rate: 0.001
+  weight_decay: 0.0001    # L2 regularization
+  momentum: 0.9           # Only for SGD
+  
+  # Training schedule
+  num_epochs: 10
+  early_stopping_patience: 3
+  
+  # Learning rate scheduler
+  lr_scheduler:
+    use_scheduler: true
+    type: "step"          # Options: step, cosine, reduce_on_plateau
+    step_size: 5          # For StepLR
+    gamma: 0.1            # Factor to reduce LR
+    
+  # Batch normalization updates
+  update_batch_norm: false
+  
+# Logging settings
+logging:
+  log_interval: 10        # Log every N batches
+  tensorboard: true
+  wandb: false
+  save_model: true
+  checkpoint_dir: "models/binary"
+  
+# Evaluation settings
+evaluation:
+  evaluate_every: 1       # Evaluate on validation set every N epochs
+  metrics: ["accuracy", "precision", "recall", "f1", "confusion_matrix"]
