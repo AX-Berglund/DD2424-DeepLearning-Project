@@ -1,0 +1,70 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{url}
+
+\title{Default Project 1 - DD2424, 2025}
+\author{Teachers and TAs of DD2424 2025 and earlier}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section*{1. Explore Transfer Learning}
+
+The first default project will explore the concept of transfer learning. This is one of the most common use cases of deep learning: download a pre-trained model and then adapt it to your dataset. Please visit the tutorial \texttt{FINETUNING TORCHVISION MODELS}, which gives an overview of how to perform fine-tuning of a pre-trained ConvNet within PyTorch. Another tutorial is given at the FastAI Computer Vision tutorial.
+
+\subsection*{1.1 Basic Project to Get E}
+
+\begin{itemize}
+    \item Download a pre-trained modern ConvNet such as: ResNet18, ResNet34, etc.
+    \item Download the dataset \url{https://www.robots.ox.ac.uk/~vgg/data/pets/} - The Oxford-IIIT Pet Dataset.
+    \item Replace the final layer of the pre-trained ConvNet to solve the binary classification problem of recognizing pictures of Dog Vs Cat. Fine-tune the replaced final layer with the Pet Dataset’s training data. Use Adam or NAG optimizer. Without too much effort, you should be able to get very high performance ($\geq$ 99\% test accuracy) on this binary classification task.
+    \item Note: you will have to check what spatial size of input your pre-trained network can cope with. The default ResNet architectures have a global average pooling layer, just before the final fully connected output layer, that produces a feature vector of fixed size independent of the spatial extent of the input image. Thus, you just have to ensure that the amount of down-sampling implemented during the ResNet does not make the spatial extent of the feature maps disappear for the later layers given the size of your input images. If your images are too small and this will happen, then you should resize them to the smallest acceptable size so that your computational effort is minimized. The normal procedure is to resize the image with one scale factor, to maintain the image’s aspect ratio, so its shortest side is re-scaled to the target length.
+    \item Next, your goal is to solve the multi-class classification problem of recognizing the breed of cat or dog. In this case, you have to replace the final layer to have 37 outputs. As this multi-class problem is harder than the binary classification problem you have just solved, you will have to do more work and you should fine-tune more of the network as opposed to just the replaced final layer. You should explore each of the following issues when fine-tuning and use performance on a validation set in tandem with your computational budget to decide when to end training.
+\end{itemize}
+
+\textbf{Strategy 1: Fine-tune l layers simultaneously.} Fine-tune the last l layers of the network (+ the classification layer) from the start of training. For the first experiment set l = 1, then re-fine-tune the pre-trained network with l = 2, then l = 3, until l = L where L is defined by your available compute and also seeing when adding more layers results in only minimal or no changes.
+
+\textbf{Strategy 2: Gradual un-freezing.} Gradual unfreeze the layers of the network during fine-tuning. This strategy involves fine-tuning the network in stages. Start with the last few layers and then progressively unfreeze earlier ones. Is there any significant difference in the final performance or training time for these two strategies?
+
+\begin{itemize}
+    \item Different learning rates and/or learning rate schedulers for different layers.
+    \item Benefit of applying data augmentation during training (flip, small rotations, crops, small size scaling) and also L2 regularization.
+    \item Effect of fine-tuning or not the batch-norm parameters and updating the estimate of the batch mean and standard deviations on the final performance on the new dataset.
+\end{itemize}
+
+After these experiments, you should be able to get a final test accuracy of approximately 95\% (note this number is a guideline and not a strict requirement). You do not have to use the Pet Dataset; you are free to use another dataset, but it should have comparable or greater difficulty than the Pet Dataset in terms of number of classes and size of images.
+
+\textbf{Fine-tuning with imbalanced classes:} For the last exercise, check what happens if you have imbalanced classes and try to fine-tune. One option would be to just use 20\% of the training images for each cat breed. If you train with the normal cross-entropy loss, what happens to the final test performance on the classes with limited data? You should then try a strategy such as weighted cross-entropy and/or over-sampling of the minority classes to compensate for the imbalanced training set.
+
+\subsection*{1.2 Extending the Basic Project to Get a Higher Grade}
+
+Once you have explored the basic project thoroughly, your group can add extensions to aim for a higher grade.
+
+\subsubsection*{1.2.1 From E → D/C}
+
+If you are aiming for a D or C, here are some extensions you could apply to investigate if it was possible to improve performance:
+
+\begin{itemize}
+    \item Explore using deeper networks than you used in the basic project. Does the deeper network help? Is it trickier to fine-tune? Do you even need to fine-tune the earlier layers? Do you need to change the optimizer to for instance AdamW to ensure good training and perform more L2 regularization?
+    \item Explore the idea of catastrophic forgetting. It has been observed that if you fine-tune a pre-trained network to a dataset with different characteristics to the pre-training dataset, the network will progressively adapt its feature representations to the new dataset and possibly not maintain those learnt from the original dataset. This is known as catastrophic forgetting. You could consider your cat Vs dog classifier as your pre-trained network. A dataset potentially distinct from ImageNet and the Pets dataset is the 102 Category Flower Dataset. Try and see if you can induce catastrophic forgetting by “aggressively” fine-tuning your cat Vs dog network to this new dataset. Ensure good performance on the new dataset and check if you can still get as good performance as before fine-tuning to the flower dataset.
+    \item Fine-tune just the batch norm mean and standard deviation and keep the weights of the layers (except the final layer) frozen.
+    \item Add more sophisticated data augmentations such as random erasing, CutMix, or MixUp to help with regularization.
+\end{itemize}
+
+\subsubsection*{1.2.2 From E → B/A}
+
+If you are aiming for a B or A, here are some possible avenues to explore to extend the basic E project (you do not need to complete the From E → D/C before starting this extension):
+
+\begin{itemize}
+    \item Explore semi-supervised learning to incorporate unlabelled data when labelled training data is limited. Try decreasing the percentage of the labelled training data used during fine-tuning: all the training data, 50\%, 10\%, 1\%. Keep a record of the drop in performance as the percentage of training data used is dropped. Using both labelled and unlabelled training datasets is known as semi-supervised learning.
+    \item Explore Vision Transformers (ViTs) and fine-tune them. There are pre-trained Vision Transformers (ViTs) available, for example, at Hugging Face. You can build on this example with the basic project in mind.
+    \item Explore LoRA layers. As the available pre-trained models become bigger, it is becoming more difficult to fine-tune them. LoRA (Low-Rank Adaptation) is a clever idea to overcome this problem. Implement LoRA from scratch and explore its benefits in your project.
+    \item Explore masked fine-tuning, a parameter-efficient fine-tuning approach where only a small subset of the network’s parameters are selected to be updated during fine-tuning.
+    \item Investigate compressing your fine-tuned network. Once you have a well-trained pre-trained network, see if you can extract a lower memory and/or compute version of this fine-tuned network while maintaining similar performance. Common approaches to compression include pruning and quantization.
+\end{itemize}
+
+You are encouraged to come up with your own extensions. However, do remember to get them vetted through your project proposal. If you go for an extension from E to A, most of the project report should be devoted to the extension as opposed to the basic project. For the basic assignment, report the main results and put the more extensive fine-tuning results in the appendix.
+
+\end{document}

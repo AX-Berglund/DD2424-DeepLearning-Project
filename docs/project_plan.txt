@@ -1,0 +1,143 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath}
+\usepackage{verbatim}
+\usepackage{sectsty}
+\sectionfont{\large}
+
+\usepackage[a4paper, margin=3cm]{geometry}
+
+\title{Project Proposal: Transfer Learning with Semi-Supervised Learning}
+\author{Axel Berglund,
+Axel Ericson Holmgren, \\
+Kasper Malm, Elliot Tapper Karlsson}
+\date{April 2025}
+
+\begin{document}
+\maketitle
+
+\section{Project participants}
+Axel Berglund, 
+Axel Ericson Holmgren, 
+Kasper Malm and
+Elliot Tapper Karlsson
+
+\section{Project title}
+Transfer Learning with Semi-Supervised Learning for Limited Labeled Data Scenarios
+
+\section{Project type}
+Our project group decided to attempt one of the default projects: \textit{1. Explore Transfer Learning}.
+
+\section{Problem description}
+Our project will explore transfer learning techniques with a focus on semi-supervised learning approaches to address scenarios with limited labeled data. We will investigate how pre-trained deep convolutional neural networks can be fine-tuned effectively when only a small portion of the training dataset is labeled.
+
+The core problem we aim to solve is how to leverage both labeled and unlabeled data to improve classification performance in transfer learning settings. We will explore different strategies for semi-supervised learning, including:
+\begin{itemize}
+    \item Pseudo-labeling techniques where the model generates labels for unlabeled data
+    \item Consistency regularization methods like Mean Teacher and FixMatch
+    \item Self-supervised pre-training followed by supervised fine-tuning
+\end{itemize}
+
+Our approach is inspired by recent advances in semi-supervised learning, particularly the paper "FixMatch: Simplifying Semi-Supervised Learning with Consistency and Confidence" by Sohn et al., 2020, which demonstrates how a simple combination of consistency regularization and pseudo-labeling can achieve state-of-the-art results.
+
+We will systematically evaluate different percentages of labeled data (100\%, 50\%, 10\%, 1\%) to analyze how performance degrades and how much our semi-supervised methods can mitigate this degradation.
+
+\section{Datasets}
+We will use \textbf{The Oxford-IIIT Pet Dataset}, which contains 37 categories of pet breeds with approximately 200 images per class (7,349 images in total). The dataset is well-suited for our transfer learning experiments as it has enough classes to be challenging but is still manageable in size.
+
+We will structure our experiments as follows:
+\begin{itemize}
+    \item \textbf{Training set:} 80\% of the data, with varying percentages labeled (100\%, 50\%, 10\%, 1\%)
+    \item \textbf{Validation set:} 10\% of the data, fully labeled
+    \item \textbf{Test set:} 10\% of the data, fully labeled
+\end{itemize}
+
+The splitting will be performed in a stratified manner to ensure class balance across all sets. For semi-supervised experiments, we'll maintain the labels for a designated portion of the training data while treating the remaining data as unlabeled.
+
+\section{Software packages}
+We will primarily use \textbf{PyTorch} as our deep learning framework. Additional libraries will include:
+\begin{itemize}
+    \item \textbf{torchvision} for pre-trained models and dataset utilities
+    \item \textbf{torch-optimizer} for advanced optimization algorithms
+    \item \textbf{tensorboard} or \textbf{Weights \& Biases} for experiment tracking
+    \item \textbf{scikit-learn} for evaluation metrics and data splitting
+    \item \textbf{albumentations} for advanced data augmentation
+\end{itemize}
+
+\section{Ratio of open source implementation and own work}
+We will use pre-trained models from torchvision as our starting point, but all the transfer learning and semi-supervised learning implementations will be our own work. Specifically:
+
+\begin{itemize}
+    \item We will use open-source implementations (30\%):
+    \begin{itemize}
+        \item Pre-trained backbone networks (ResNet18, ResNet34, etc.)
+        \item Standard data loading and augmentation utilities
+        \item Basic evaluation metrics
+    \end{itemize}
+    
+    \item We will implement ourselves (70\%):
+    \begin{itemize}
+        \item Custom model architectures with replaced classification layers
+        \item Fine-tuning strategies (last layer, multi-layer, gradual unfreezing)
+        \item Semi-supervised learning algorithms
+        \item Low-Rank Adaptation (LoRA) for parameter-efficient fine-tuning
+        \item Custom training loops and evaluation procedures
+        \item Advanced data augmentation strategies for semi-supervised learning
+    \end{itemize}
+\end{itemize}
+
+\section{Initial experiences and baselines}
+We will establish the following baselines and initial experiments:
+
+\begin{itemize}
+    \item \textbf{Baseline 1:} Binary classification (cat vs. dog) using a pre-trained ResNet18 with only the final layer fine-tuned.
+    
+    \item \textbf{Baseline 2:} Multi-class classification (37 breeds) using a pre-trained ResNet34 with the last few layers fine-tuned.
+    
+    \item \textbf{Experimental progression:}
+    \begin{itemize}
+        \item Start with supervised learning using 100\% of labels as a performance ceiling
+        \item Reduce labeled data to 50\%, 10\%, and 1\% with standard supervised learning
+        \item Apply semi-supervised techniques at each labeled data percentage
+        \item Compare different semi-supervised methods in terms of accuracy and efficiency
+    \end{itemize}
+\end{itemize}
+
+We expect to see the most significant improvements from semi-supervised learning in the most label-scarce scenarios (10\% and 1\% labeled data).
+
+\section{Milestones}
+We have defined the following milestones for different grade targets:
+
+\textbf{E grade:}
+\begin{itemize}
+    \item Successfully implement basic transfer learning for binary classification (dog vs. cat)
+    \item Achieve high accuracy ($\geq 99\%$) on the binary task by fine-tuning the final layer
+    \item Implement multi-class classification for the 37 breeds with multiple fine-tuning strategies
+    \item Experiment with fine-tuning layers and data augmentation
+    \item Reach approximately 95\% accuracy on the multi-class task
+    \item Test the performance impact of imbalanced classes
+\end{itemize}
+
+\textbf{D-C range:}
+\begin{itemize}
+    \item Explore using deeper networks (ResNet50+) and analyze their impact on performance
+    \item Investigate catastrophic forgetting by fine-tuning on different datasets
+    \item Implement and test more sophisticated data augmentations (CutMix, MixUp)
+    \item Experiment with fine-tuning only batch normalization parameters
+    \item Test AdamW optimizer with weight decay for better regularization
+\end{itemize}
+
+\textbf{B-A range:}
+\begin{itemize}
+    \item \textbf{Explore semi-supervised learning} with different percentages of labeled data (50\%, 10\%, 1\%)
+    \item Implement and evaluate pseudo-labeling and consistency regularization approaches
+    \item Experiment with Vision Transformers (ViTs) and compare to CNNs in transfer learning
+    \item Implement Low-Rank Adaptation (LoRA) from scratch and explore its benefits
+    \item Investigate masked fine-tuning as a parameter-efficient approach
+    \item Explore model compression techniques (pruning, quantization) on fine-tuned networks
+\end{itemize}
+
+\section{Attempted grade}
+Our project group is aiming for grade \textbf{A}, as we plan to implement all the base requirements plus several challenging extensions from the B-A range, with a particular focus on semi-supervised learning approaches. We are committed to thorough experimentation, rigorous evaluation, and comprehensive documentation of our findings.
+
+\end{document}
