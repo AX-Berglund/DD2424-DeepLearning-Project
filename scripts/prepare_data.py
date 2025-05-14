@@ -42,6 +42,45 @@ DOG_BREEDS = [
 ]
 
 
+ALL_BREEDS = ['Abyssinian',
+ 'american_bulldog',
+ 'american_pit_bull_terrier',
+ 'basset_hound',
+ 'beagle',
+ 'Bengal',
+ 'Birman',
+ 'Bombay',
+ 'boxer',
+ 'British_Shorthair',
+ 'chihuahua',
+ 'Egyptian_Mau',
+ 'english_cocker_spaniel',
+ 'english_setter',
+ 'german_shorthaired',
+ 'great_pyrenees',
+ 'havanese',
+ 'japanese_chin',
+ 'keeshond',
+ 'leonberger',
+ 'Maine_Coon',
+ 'miniature_pinscher',
+ 'newfoundland',
+ 'Persian',
+ 'pomeranian',
+ 'pug',
+ 'Ragdoll',
+ 'Russian_Blue',
+ 'saint_bernard',
+ 'samoyed',
+ 'scottish_terrier',
+ 'shiba_inu',
+ 'Siamese',
+ 'Sphynx',
+ 'staffordshire_bull_terrier',
+ 'wheaten_terrier',
+ 'yorkshire_terrier']
+
+
 def ensure_directory_exists(directory):
     """Create directory if it doesn't exist."""
     if not directory.exists():
@@ -147,7 +186,8 @@ def organize_multiclass_dataset(df, output_dir):
         ensure_directory_exists(split_dir)
     
     # Get all class names
-    all_breeds = CAT_BREEDS + DOG_BREEDS
+    #all_breeds = CAT_BREEDS + DOG_BREEDS
+    all_breeds = ALL_BREEDS
     
     # Create class directories
     for split in ['train', 'val', 'test']:
@@ -189,7 +229,8 @@ def create_imbalanced_dataset(df, output_dir, imbalance_ratio=0.2):
     test_df = df['test']
     
     # Create imbalanced training set: keep all dog images but limit cat images
-    all_breeds = CAT_BREEDS + DOG_BREEDS
+    #all_breeds = CAT_BREEDS + DOG_BREEDS
+    all_breeds = ALL_BREEDS
     imbalanced_train_df = pd.DataFrame(columns=train_df.columns)
     
     # Group by class_id
