@@ -2,6 +2,7 @@
 
 # General settings
 experiment_name: "multiclass_classification"
+task: "multiclass"  # Explicitly set task to multiclass
 seed: 42
 device: "cuda"  # or "cpu"
 num_workers: 4

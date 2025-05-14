@@ -86,23 +86,46 @@ class MultiClassTrainer:
             list: List of class names.
         """
         # Define cat and dog breeds
-        cat_breeds = [
-            "Abyssinian", "Bengal", "Birman", "Bombay", "British_Shorthair", 
-            "Egyptian_Mau", "Maine_Coon", "Persian", "Ragdoll", "Russian_Blue", 
-            "Siamese", "Sphynx"
-        ]
+
+        all_breeds = ['Abyssinian',
+            'american_bulldog',
+            'american_pit_bull_terrier',
+            'basset_hound',
+            'beagle',
+            'Bengal',
+            'Birman',
+            'Bombay',
+            'boxer',
+            'British_Shorthair',
+            'chihuahua',
+            'Egyptian_Mau',
+            'english_cocker_spaniel',
+            'english_setter',
+            'german_shorthaired',
+            'great_pyrenees',
+            'havanese',
+            'japanese_chin',
+            'keeshond',
+            'leonberger',
+            'Maine_Coon',
+            'miniature_pinscher',
+            'newfoundland',
+            'Persian',
+            'pomeranian',
+            'pug',
+            'Ragdoll',
+            'Russian_Blue',
+            'saint_bernard',
+            'samoyed',
+            'scottish_terrier',
+            'shiba_inu',
+            'Siamese',
+            'Sphynx',
+            'staffordshire_bull_terrier',
+            'wheaten_terrier',
+            'yorkshire_terrier']
         
-        dog_breeds = [
-            "american_bulldog", "american_pit_bull_terrier", "basset_hound", 
-            "beagle", "boxer", "chihuahua", "english_cocker_spaniel", 
-            "english_setter", "german_shorthaired", "great_pyrenees", 
-            "havanese", "japanese_chin", "keeshond", "leonberger", 
-            "miniature_pinscher", "newfoundland", "pomeranian", "pug", 
-            "saint_bernard", "samoyed", "scottish_terrier", "shiba_inu", 
-            "staffordshire_bull_terrier", "wheaten_terrier", "yorkshire_terrier"
-        ]
-        
-        return cat_breeds + dog_breeds
+        return all_breeds
     
     def _compute_class_weights(self):
         """
