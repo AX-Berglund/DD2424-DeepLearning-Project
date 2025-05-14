@@ -286,7 +286,13 @@ class Logger:
             dataformats (str): Format of the input tensor ('CHW', 'HWC', etc.)
         """
         if self.tb_writer:
-            self.tb_writer.add_image(tag, img_tensor, global_step, dataformats)
+            self.tb_writer.add_image(
+                tag=tag,
+                img_tensor=img_tensor,
+                global_step=int(global_step),
+                dataformats=dataformats,
+                walltime=None  # Explicitly set walltime to None to use current time
+            )
     
     def log_histogram(self, tag, values, global_step=0, bins='auto'):
         """
@@ -353,7 +359,9 @@ class Logger:
         
         # Close TensorBoard writer
         if self.tb_writer:
+            self.tb_writer.flush()  # Ensure all data is written
             self.tb_writer.close()
+            self.tb_writer = None  # Clear the reference
         
         # Close WandB
         if self.wandb_enabled:
@@ -366,6 +374,14 @@ class Logger:
         # Save final metrics
         with open(self.exp_dir / "metrics.json", "w") as f:
             json.dump(self.metrics, f, indent=4)
+        
+        # Close file logger
+        for handler in self.file_logger.handlers[:]:
+            handler.close()
+            self.file_logger.removeHandler(handler)
+        
+        # Remove logger from logging manager
+        logging.getLogger().removeHandler(self.file_logger)
 
 
 class MetricTracker:

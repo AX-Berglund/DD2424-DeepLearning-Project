@@ -41,7 +41,7 @@ training:
   momentum: 0.9           # Only for SGD
   
   # Training schedule
-  num_epochs: 10
+  num_epochs: 10 
   early_stopping_patience: 3
   
   # Learning rate scheduler

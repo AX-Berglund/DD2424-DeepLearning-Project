@@ -13,25 +13,35 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
 
-def plot_to_image(figure):
+def plot_to_image(fig):
     """
-    Convert a matplotlib figure to an image tensor.
+    Convert a matplotlib figure to a tensor that can be logged to TensorBoard.
     
     Args:
-        figure (matplotlib.figure.Figure): Figure to convert.
+        fig (matplotlib.figure.Figure): The figure to convert.
         
     Returns:
-        torch.Tensor: Image tensor.
+        torch.Tensor: The image tensor in format [C, H, W].
     """
-    # Save the plot to a buffer
+    # Save the figure to a buffer
     buf = io.BytesIO()
-    figure.savefig(buf, format='png')
-    plt.close(figure)
+    fig.savefig(buf, format='png', bbox_inches='tight')
     buf.seek(0)
     
-    # Load the image and convert to tensor
+    # Convert to PIL Image
     image = Image.open(buf)
-    image = torchvision.transforms.ToTensor()(image)
+    
+    # Convert to numpy array and ensure proper data type
+    image = np.array(image).astype(np.uint8)
+    
+    # Convert to torch tensor and normalize to [0, 1]
+    image = torch.from_numpy(image).float() / 255.0
+    
+    # Convert from [H, W, C] to [C, H, W]
+    if image.shape[-1] == 3:
+        image = image.permute(2, 0, 1)
+    elif image.shape[-1] == 4:  # Handle RGBA images
+        image = image[:, :, :3].permute(2, 0, 1)  # Convert RGBA to RGB
     
     return image
 
@@ -562,4 +572,79 @@ def visualize_parameter_changes(model, original_params):
     ax.set_xticklabels(layers, rotation=90)
     
     fig.tight_layout()
+    return fig
+
+
+def visualize_model_predictions(model, dataloader, class_names=None, device='cpu', num_samples=8):
+    """
+    Visualize model predictions on a batch of images.
+    
+    Args:
+        model (nn.Module): Model to evaluate.
+        dataloader (torch.utils.data.DataLoader): Data loader containing images.
+        class_names (list, optional): List of class names.
+        device (str): Device to run model on.
+        num_samples (int): Number of samples to visualize.
+        
+    Returns:
+        matplotlib.figure.Figure: Figure with predictions visualization.
+    """
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Get a batch of images
+    images, targets = next(iter(dataloader))
+    images = images[:num_samples]
+    targets = targets[:num_samples]
+    
+    # Move to device
+    images = images.to(device)
+    
+    # Get predictions
+    with torch.no_grad():
+        outputs = model(images)
+        probabilities = torch.softmax(outputs, dim=1)
+        predictions = torch.argmax(outputs, dim=1)
+    
+    # Move tensors to CPU for visualization
+    images = images.cpu()
+    predictions = predictions.cpu()
+    probabilities = probabilities.cpu()
+    
+    # Create figure
+    fig, axes = plt.subplots(2, num_samples, figsize=(2*num_samples, 4))
+    
+    # Plot images and predictions
+    for i in range(num_samples):
+        # Plot image
+        img = images[i].permute(1, 2, 0)
+        # Denormalize if needed
+        if img.min() < 0:
+            img = (img + 1) / 2
+        img = torch.clamp(img, 0, 1)
+        
+        axes[0, i].imshow(img)
+        axes[0, i].axis('off')
+        
+        # Add prediction text
+        pred_class = predictions[i].item()
+        true_class = targets[i].item()
+        pred_prob = probabilities[i, pred_class].item()
+        
+        title = f'Pred: {class_names[pred_class] if class_names else pred_class}\n'
+        title += f'True: {class_names[true_class] if class_names else true_class}\n'
+        title += f'Prob: {pred_prob:.2f}'
+        
+        axes[0, i].set_title(title, fontsize=8)
+        
+        # Plot probability distribution
+        probs = probabilities[i].numpy()
+        axes[1, i].bar(range(len(probs)), probs)
+        axes[1, i].set_xticks(range(len(probs)))
+        if class_names:
+            axes[1, i].set_xticklabels(class_names, rotation=45, ha='right')
+        axes[1, i].set_ylim(0, 1)
+        axes[1, i].set_title('Class Probabilities', fontsize=8)
+    
+    plt.tight_layout()
     return fig

@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from src.utils.logger import MetricTracker
 from src.utils.metrics import compute_accuracy, compute_metrics
-from src.utils.visualization import visualize_model_predictions
+from src.utils.visualization import visualize_model_predictions, plot_to_image
 
 
 class BinaryTrainer:
@@ -207,6 +207,10 @@ class BinaryTrainer:
         # Get data loader
         val_loader = self.dataloaders['val']
         
+        # Storage for detailed metrics
+        all_outputs = []
+        all_targets = []
+        
         # Validation loop
         with torch.no_grad():
             for data, target in val_loader:
@@ -221,14 +225,22 @@ class BinaryTrainer:
                 
                 # Update metrics
                 tracker.update(loss.item(), output, target)
+                
+                # Collect outputs and targets for detailed metrics
+                all_outputs.append(output)
+                all_targets.append(target)
+        
+        # Concatenate all outputs and targets
+        all_outputs = torch.cat(all_outputs, dim=0)
+        all_targets = torch.cat(all_targets, dim=0)
         
         # Get epoch metrics
         metrics = tracker.get_metrics()
         
         # Log detailed metrics
         detailed_metrics = compute_metrics(
-            outputs=output,
-            targets=target,
+            outputs=all_outputs,
+            targets=all_targets,
             class_names=self.class_names,
             binary=True
         )
@@ -242,7 +254,11 @@ class BinaryTrainer:
                 class_names=self.class_names,
                 device=self.device
             )
-            self.logger.log_image(f"predictions_epoch_{epoch}", plot_to_image(fig), global_step=epoch)
+            self.logger.log_image(
+                tag=f"predictions_epoch_{epoch}",
+                img_tensor=plot_to_image(fig),
+                global_step=int(epoch)  # Ensure global_step is an integer
+            )
         
         return metrics['loss'], metrics['accuracy']
     

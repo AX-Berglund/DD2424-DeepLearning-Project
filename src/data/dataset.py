@@ -287,54 +287,47 @@ def create_data_loaders(config):
     Returns:
         dict: Dictionary of data loaders for each split.
     """
-    data_loaders = {}
-    
-    # Determine dataset class based on task
-    if config['model']['num_classes'] == 2:
+    # Get dataset class based on task
+    task = config.get('task', 'binary')
+    if task == 'binary':
         dataset_class = BinaryPetDataset
     else:
         dataset_class = MultiClassPetDataset
     
-    # Create transforms for each split
+    # Get transforms for each split
     transforms_dict = {
         split: get_transforms(config, split)
         for split in ['train', 'val', 'test']
     }
     
-    # Check if using imbalanced dataset
-    use_imbalanced = False
-    if 'class_imbalance' in config['training'] and config['training']['class_imbalance']['enabled']:
-        use_imbalanced = True
-    
     # Create datasets
     datasets = {}
     for split in ['train', 'val', 'test']:
-        datasets[split] = dataset_class(
-            root_dir=config['data']['processed_path'],
-            split=split,
-            transform=transforms_dict[split],
-            imbalanced=use_imbalanced if hasattr(dataset_class, 'imbalanced') else False
-        )
-    
-    # Apply mixup or cutmix if specified (only for training)
-    if (config['data']['augmentation'].get('mixup', False) and 
-        split == 'train'):
-        datasets['train'] = MixupDataset(datasets['train'])
-    elif (config['data']['augmentation'].get('cutmix', False) and 
-          split == 'train'):
-        datasets['train'] = CutMixDataset(datasets['train'])
+        if task == 'multiclass':
+            # Only pass imbalanced parameter to MultiClassPetDataset
+            datasets[split] = dataset_class(
+                root_dir=config['data']['processed_path'],
+                split=split,
+                transform=transforms_dict[split],
+                imbalanced=config.get('use_imbalanced', False)
+            )
+        else:
+            # For binary classification, don't pass imbalanced parameter
+            datasets[split] = dataset_class(
+                root_dir=config['data']['processed_path'],
+                split=split,
+                transform=transforms_dict[split]
+            )
     
     # Create data loaders
-    for split, dataset in datasets.items():
-        shuffle = (split == 'train')
-        batch_size = config['data']['batch_size']
-        
-        data_loaders[split] = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
+    dataloaders = {}
+    for split in ['train', 'val', 'test']:
+        dataloaders[split] = torch.utils.data.DataLoader(
+            datasets[split],
+            batch_size=config['data']['batch_size'],
+            shuffle=(split == 'train'),
             num_workers=config['num_workers'],
             pin_memory=True
         )
     
-    return data_loaders
+    return dataloaders
