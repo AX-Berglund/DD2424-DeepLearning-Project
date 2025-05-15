@@ -21,6 +21,7 @@ from src.utils.visualization import (
     visualize_model_predictions, plot_to_image, 
     visualize_class_distribution, visualize_parameter_changes
 )
+from src.trainers.binary_trainer import EarlyStopping  # Import EarlyStopping class
 
 
 class MultiClassTrainer:
@@ -42,7 +43,9 @@ class MultiClassTrainer:
         self.logger = logger
         
         # Set device
-        self.device = torch.device(config['device'])
+        self.device = torch.device(config['training']['device'])
+        
+        # Move model to device
         self.model = self.model.to(self.device)
         
         # Get class names (breed names)
@@ -54,16 +57,25 @@ class MultiClassTrainer:
             config['training']['class_imbalance']['strategy'] == 'weighted_loss'):
             self.class_weights = self._compute_class_weights()
         
-        # Initialize optimizer
-        self.optimizer = self._initialize_optimizer()
-        
-        # Initialize learning rate scheduler
-        self.scheduler = self._initialize_lr_scheduler()
+        # Initialize optimizer and scheduler
+        self.optimizer = self._create_optimizer()
+        self.scheduler = self._create_scheduler()
         
         # Initialize early stopping
-        self.early_stopping_patience = config['training']['early_stopping_patience']
-        self.early_stopping_counter = 0
-        self.best_val_acc = 0.0
+        self.early_stopping = EarlyStopping(
+            patience=config['training']['early_stopping_patience'],
+            min_delta=0.0,
+            verbose=True,
+            mode='max'  # Use 'max' mode since we're monitoring accuracy
+        )
+        
+        # Initialize metrics
+        self.metrics = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': []
+        }
         
         # Store original model parameters for comparison
         if hasattr(self.model, 'original_params'):
@@ -85,8 +97,11 @@ class MultiClassTrainer:
         Returns:
             list: List of class names.
         """
-        # Define cat and dog breeds
-
+        # Check if this is a binary classification task
+        if self.config['data'].get('task_type') == 'binary':
+            return ['cat', 'dog']
+            
+        # Define cat and dog breeds for multiclass
         all_breeds = ['Abyssinian',
             'american_bulldog',
             'american_pit_bull_terrier',
@@ -154,7 +169,7 @@ class MultiClassTrainer:
         
         return weights
     
-    def _initialize_optimizer(self):
+    def _create_optimizer(self):
         """
         Initialize the optimizer based on configuration.
         
@@ -183,19 +198,41 @@ class MultiClassTrainer:
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer_name}")
     
-    def _initialize_lr_scheduler(self):
+    def _create_scheduler(self):
         """
         Initialize the learning rate scheduler based on configuration.
         
         Returns:
             torch.optim.lr_scheduler._LRScheduler: Initialized scheduler or None.
         """
-        scheduler_config = self.config['training']['lr_scheduler']
+        scheduler_config = self.config['training'].get('scheduler')
         
-        if not scheduler_config.get('use_scheduler', False):
+        if scheduler_config is None:
             return None
+            
+        # Handle string scheduler type
+        if isinstance(scheduler_config, str):
+            scheduler_type = scheduler_config.lower()
+            if scheduler_type == 'step':
+                return StepLR(self.optimizer, step_size=10, gamma=0.1)
+            elif scheduler_type == 'cosine':
+                return CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=self.config['training']['num_epochs'],
+                    eta_min=0.00001
+                )
+            elif scheduler_type == 'reduce_on_plateau':
+                return ReduceLROnPlateau(
+                    self.optimizer,
+                    mode='min',
+                    factor=0.1,
+                    patience=5
+                )
+            else:
+                raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
         
-        scheduler_type = scheduler_config.get('type', 'step').lower()
+        # Handle dictionary scheduler config
+        scheduler_type = scheduler_config.get('name', 'reduce_on_plateau').lower()
         
         if scheduler_type == 'step':
             return StepLR(
@@ -207,15 +244,14 @@ class MultiClassTrainer:
             return CosineAnnealingLR(
                 self.optimizer,
                 T_max=self.config['training']['num_epochs'],
-                eta_min=scheduler_config.get('eta_min', 0)
+                eta_min=scheduler_config.get('eta_min', 0.00001)
             )
         elif scheduler_type == 'reduce_on_plateau':
             return ReduceLROnPlateau(
                 self.optimizer,
                 mode='min',
                 factor=scheduler_config.get('gamma', 0.1),
-                patience=scheduler_config.get('patience', 5),
-                verbose=True
+                patience=scheduler_config.get('patience', 5)
             )
         else:
             raise ValueError(f"Unsupported scheduler: {scheduler_type}")
@@ -480,9 +516,6 @@ class MultiClassTrainer:
         # Get number of epochs
         num_epochs = self.config['training']['num_epochs']
         
-        # Initialize best metrics
-        best_val_acc = 0.0
-        
         # Training loop
         for epoch in range(num_epochs):
             # Log epoch start
@@ -515,12 +548,12 @@ class MultiClassTrainer:
             )
             
             # Check if this is the best model
-            is_best = val_acc > best_val_acc
+            is_best = val_acc > self.early_stopping.best_score
             if is_best:
-                best_val_acc = val_acc
-                self.early_stopping_counter = 0
+                self.early_stopping.best_score = val_acc
+                self.early_stopping.counter = 0
             else:
-                self.early_stopping_counter += 1
+                self.early_stopping.counter += 1
             
             # Save model checkpoint
             self.logger.save_model(
@@ -533,7 +566,7 @@ class MultiClassTrainer:
             )
             
             # Early stopping
-            if self.early_stopping_counter >= self.early_stopping_patience:
+            if self.early_stopping.counter >= self.early_stopping.patience:
                 self.logger.info(f"Early stopping triggered after epoch {epoch}")
                 break
         

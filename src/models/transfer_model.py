@@ -6,30 +6,110 @@ Transfer learning model wrapper.
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from torchvision.models import ResNet18_Weights, ResNet50_Weights
 
 
 class TransferModel(nn.Module):
-    """
-    Wrapper for pre-trained models with customizable fine-tuning strategies.
-    """
+    """Transfer learning model using a pre-trained backbone."""
     
     def __init__(self, config):
         """
-        Initialize the transfer learning model.
+        Initialize the model.
         
         Args:
             config (dict): Model configuration.
         """
-        super(TransferModel, self).__init__()
+        super().__init__()
         
+        # Store config
         self.config = config
-        self.unfreeze_layers = config['training'].get('unfreeze_layers', 1)
-        self.architecture = config['model']['architecture']
-        self.num_classes = config['model']['num_classes']
-        self.pretrained = config['model'].get('pretrained', True)
         
-        # Initialize the model
-        self._initialize_model()
+        # Get model configuration
+        self.architecture = config['model']['architecture']
+        self.pretrained = config['model']['pretrained']
+        self.num_classes = config['model']['num_classes']
+        self.dropout_rate = config['model']['dropout_rate']
+        
+        # Load pre-trained model
+        if self.architecture == 'resnet18':
+            self.model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1 if self.pretrained else None)
+            self.feature_dim = self.model.fc.in_features
+        elif self.architecture == 'resnet50':
+            self.model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1 if self.pretrained else None)
+            self.feature_dim = self.model.fc.in_features
+        else:
+            raise ValueError(f"Unsupported architecture: {self.architecture}")
+        
+        # Replace the final layer with a proper classification head
+        if self.num_classes == 2:  # Binary classification
+            self.model.fc = nn.Sequential(
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(self.feature_dim, 1)  # Single output for binary classification
+            )
+        else:  # Multi-class classification
+            self.model.fc = nn.Sequential(
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(self.feature_dim, self.num_classes)
+            )
+        
+        # Initialize weights for the new layers
+        self._initialize_weights()
+        
+        # Set all parameters to require gradients
+        for param in self.parameters():
+            param.requires_grad = True
+    
+    def _initialize_weights(self):
+        """Initialize the weights of the new layers."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        """
+        Forward pass.
+        
+        Args:
+            x (torch.Tensor): Input tensor.
+            
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        return self.model(x)
+    
+    def get_optimizer_param_groups(self):
+        """
+        Get parameter groups for the optimizer.
+        
+        Returns:
+            list: List of parameter groups.
+        """
+        # Get the number of layers to unfreeze
+        unfreeze_layers = self.config['training'].get('unfreeze_layers', 1)
+        
+        # Get all layers
+        layers = list(self.model.children())
+        
+        # Create parameter groups
+        param_groups = []
+        
+        # Add parameters for unfrozen layers
+        for i in range(unfreeze_layers):
+            layer = layers[-(i + 1)]
+            param_groups.append({
+                'params': layer.parameters(),
+                'lr': self.config['training']['learning_rate']
+            })
+        
+        # Add parameters for the final layer
+        param_groups.append({
+            'params': self.model.fc.parameters(),
+            'lr': self.config['training']['learning_rate']
+        })
+        
+        return param_groups
     
     def _initialize_model(self):
         """Initialize the pre-trained model and adjust the final layer."""

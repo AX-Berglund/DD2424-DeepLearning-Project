@@ -6,11 +6,15 @@ Logging utilities for training and evaluation.
 import os
 import json
 import logging
+import warnings
 from pathlib import Path
 import time
 import torch
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
+
+# Filter out PyTorch DataLoader warnings
+warnings.filterwarnings("ignore", message=".*pin_memory.*")
 
 # Setup basic logging
 logging.basicConfig(
@@ -18,6 +22,9 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Filter out PyTorch DataLoader warnings
+logging.getLogger('torch.utils.data.dataloader').setLevel(logging.ERROR)
 
 
 class Logger:
@@ -35,10 +42,10 @@ class Logger:
         
         # Create experiment name with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        exp_name = f"{config['experiment_name']}_{timestamp}"
+        exp_name = f"{config['logging']['experiment_name']}_{timestamp}"
         
         # Setup directories
-        self.log_dir = Path(log_dir)
+        self.log_dir = Path(config['logging']['log_dir'])
         self.exp_dir = self.log_dir / "run_logs" / exp_name
         self.tensorboard_dir = self.log_dir / "tensorboard" / exp_name
         
@@ -51,7 +58,7 @@ class Logger:
         
         # Setup TensorBoard if enabled
         self.tb_writer = None
-        if config['logging']['tensorboard']:
+        if config['logging'].get('tensorboard', False):
             self.tb_writer = SummaryWriter(log_dir=self.tensorboard_dir)
         
         # Setup WandB if enabled
@@ -82,6 +89,10 @@ class Logger:
         logger = logging.getLogger(f"exp_{self.exp_dir.name}")
         logger.setLevel(logging.INFO)
         
+        # Check if logger already has handlers
+        if logger.handlers:
+            return logger
+        
         # Create file handler
         file_handler = logging.FileHandler(self.exp_dir / "experiment.log")
         file_handler.setLevel(logging.INFO)
@@ -111,17 +122,23 @@ class Logger:
     
     def info(self, message):
         """Log info message."""
-        logging.info(message)
+        # Only log to root logger if no handlers exist
+        if not logging.getLogger().handlers:
+            logging.info(message)
         self.file_logger.info(message)
     
     def warning(self, message):
         """Log warning message."""
-        logging.warning(message)
+        # Only log to root logger if no handlers exist
+        if not logging.getLogger().handlers:
+            logging.warning(message)
         self.file_logger.warning(message)
     
     def error(self, message):
         """Log error message."""
-        logging.error(message)
+        # Only log to root logger if no handlers exist
+        if not logging.getLogger().handlers:
+            logging.error(message)
         self.file_logger.error(message)
     
     def start_epoch(self, epoch):

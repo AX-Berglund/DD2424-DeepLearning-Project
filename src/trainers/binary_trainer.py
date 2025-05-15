@@ -11,10 +11,62 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, ReduceLROnPlateau
 import numpy as np
 from tqdm import tqdm
+from torchmetrics import Accuracy, F1Score, Precision, Recall
 
 from src.utils.logger import MetricTracker
 from src.utils.metrics import compute_accuracy, compute_metrics
 from src.utils.visualization import visualize_model_predictions, plot_to_image
+
+
+class EarlyStopping:
+    """Early stopping to prevent overfitting."""
+    
+    def __init__(self, patience=7, min_delta=0, verbose=True, mode='min'):
+        """
+        Initialize early stopping.
+        
+        Args:
+            patience (int): Number of epochs to wait before stopping.
+            min_delta (float): Minimum change in monitored value to qualify as an improvement.
+            verbose (bool): Whether to print messages.
+            mode (str): One of 'min' or 'max'. 'min' for loss, 'max' for accuracy.
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.verbose = verbose
+        self.counter = 0
+        self.mode = mode
+        self.best_score = float('-inf') if mode == 'max' else float('inf')
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+    
+    def __call__(self, val_metric):
+        """
+        Check if training should be stopped.
+        
+        Args:
+            val_metric (float): Current validation metric (loss or accuracy).
+        """
+        if self.mode == 'min':
+            if val_metric > self.best_score - self.min_delta:
+                self.counter += 1
+                if self.verbose:
+                    print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                if self.counter >= self.patience:
+                    self.early_stop = True
+            else:
+                self.best_score = val_metric
+                self.counter = 0
+        else:  # mode == 'max'
+            if val_metric < self.best_score + self.min_delta:
+                self.counter += 1
+                if self.verbose:
+                    print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                if self.counter >= self.patience:
+                    self.early_stop = True
+            else:
+                self.best_score = val_metric
+                self.counter = 0
 
 
 class BinaryTrainer:
@@ -36,19 +88,47 @@ class BinaryTrainer:
         self.logger = logger
         
         # Set device
-        self.device = torch.device(config['device'])
+        self.device = torch.device(config['training']['device'])
+        
+        # Move model to device
         self.model = self.model.to(self.device)
         
-        # Initialize optimizer
-        self.optimizer = self._initialize_optimizer()
+        # Initialize optimizer and scheduler
+        self.optimizer = self._create_optimizer()
+        self.scheduler = self._create_scheduler()
         
-        # Initialize learning rate scheduler
-        self.scheduler = self._initialize_lr_scheduler()
+        # Initialize loss function
+        self.criterion = nn.BCEWithLogitsLoss()
+        
+        # Initialize metrics
+        self.metrics = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'accuracy': Accuracy(task='binary'),
+            'f1': F1Score(task='binary'),
+            'precision': Precision(task='binary'),
+            'recall': Recall(task='binary')
+        }
         
         # Initialize early stopping
-        self.early_stopping_patience = config['training']['early_stopping_patience']
-        self.early_stopping_counter = 0
-        self.best_val_acc = 0.0
+        self.early_stopping = EarlyStopping(
+            patience=config['training']['early_stopping_patience'],
+            min_delta=0.0,
+            verbose=True
+        )
+        
+        # Initialize best model state
+        self.best_model_state = None
+        self.best_val_loss = float('inf')
+        
+        # Initialize training state
+        self.current_epoch = 0
+        self.train_losses = []
+        self.val_losses = []
+        self.train_metrics = []
+        self.val_metrics = []
         
         # Class names
         self.class_names = ['cat', 'dog']
@@ -56,7 +136,7 @@ class BinaryTrainer:
         # Log model summary
         self.logger.log_model_summary(self.model)
     
-    def _initialize_optimizer(self):
+    def _create_optimizer(self):
         """
         Initialize the optimizer based on configuration.
         
@@ -85,19 +165,41 @@ class BinaryTrainer:
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer_name}")
     
-    def _initialize_lr_scheduler(self):
+    def _create_scheduler(self):
         """
         Initialize the learning rate scheduler based on configuration.
         
         Returns:
             torch.optim.lr_scheduler._LRScheduler: Initialized scheduler or None.
         """
-        scheduler_config = self.config['training']['lr_scheduler']
+        scheduler_config = self.config['training'].get('scheduler')
         
-        if not scheduler_config.get('use_scheduler', False):
+        if scheduler_config is None:
             return None
+            
+        # Handle string scheduler type
+        if isinstance(scheduler_config, str):
+            scheduler_type = scheduler_config.lower()
+            if scheduler_type == 'step':
+                return StepLR(self.optimizer, step_size=10, gamma=0.1)
+            elif scheduler_type == 'cosine':
+                return CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=self.config['training']['num_epochs'],
+                    eta_min=0.00001
+                )
+            elif scheduler_type == 'reduce_on_plateau':
+                return ReduceLROnPlateau(
+                    self.optimizer,
+                    mode='min',
+                    factor=0.1,
+                    patience=5
+                )
+            else:
+                raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
         
-        scheduler_type = scheduler_config.get('type', 'step').lower()
+        # Handle dictionary scheduler config
+        scheduler_type = scheduler_config.get('name', 'reduce_on_plateau').lower()
         
         if scheduler_type == 'step':
             return StepLR(
@@ -109,15 +211,14 @@ class BinaryTrainer:
             return CosineAnnealingLR(
                 self.optimizer,
                 T_max=self.config['training']['num_epochs'],
-                eta_min=scheduler_config.get('eta_min', 0)
+                eta_min=scheduler_config.get('eta_min', 0.00001)
             )
         elif scheduler_type == 'reduce_on_plateau':
             return ReduceLROnPlateau(
                 self.optimizer,
                 mode='min',
                 factor=scheduler_config.get('gamma', 0.1),
-                patience=scheduler_config.get('patience', 5),
-                verbose=True
+                patience=scheduler_config.get('patience', 5)
             )
         else:
             raise ValueError(f"Unsupported scheduler: {scheduler_type}")
@@ -215,13 +316,14 @@ class BinaryTrainer:
         with torch.no_grad():
             for data, target in val_loader:
                 # Move data to device
-                data, target = data.to(self.device), target.to(self.device)
+                data = data.to(self.device)
+                target = target.to(self.device).float().unsqueeze(1)  # Add channel dimension
                 
                 # Forward pass
                 output = self.model(data)
                 
                 # Compute loss
-                loss = F.cross_entropy(output, target)
+                loss = F.binary_cross_entropy_with_logits(output, target)
                 
                 # Update metrics
                 tracker.update(loss.item(), output, target)
@@ -244,21 +346,8 @@ class BinaryTrainer:
             class_names=self.class_names,
             binary=True
         )
-        self.logger.log_metrics(epoch, detailed_metrics, split="val")
         
-        # Visualize model predictions if it's a multiple of 5 epochs
-        if epoch % 5 == 0:
-            fig = visualize_model_predictions(
-                model=self.model,
-                dataloader=val_loader,
-                class_names=self.class_names,
-                device=self.device
-            )
-            self.logger.log_image(
-                tag=f"predictions_epoch_{epoch}",
-                img_tensor=plot_to_image(fig),
-                global_step=int(epoch)  # Ensure global_step is an integer
-            )
+        self.logger.log_metrics(epoch, detailed_metrics, split="val")
         
         return metrics['loss'], metrics['accuracy']
     
@@ -322,9 +411,6 @@ class BinaryTrainer:
         # Get number of epochs
         num_epochs = self.config['training']['num_epochs']
         
-        # Initialize best metrics
-        best_val_acc = 0.0
-        
         # Training loop
         for epoch in range(num_epochs):
             # Log epoch start
@@ -357,12 +443,10 @@ class BinaryTrainer:
             )
             
             # Check if this is the best model
-            is_best = val_acc > best_val_acc
+            is_best = val_loss < self.best_val_loss
             if is_best:
-                best_val_acc = val_acc
-                self.early_stopping_counter = 0
-            else:
-                self.early_stopping_counter += 1
+                self.best_val_loss = val_loss
+                self.best_model_state = self.model.state_dict()
             
             # Save model checkpoint
             self.logger.save_model(
@@ -375,7 +459,8 @@ class BinaryTrainer:
             )
             
             # Early stopping
-            if self.early_stopping_counter >= self.early_stopping_patience:
+            self.early_stopping(val_loss)
+            if self.early_stopping.early_stop:
                 self.logger.info(f"Early stopping triggered after epoch {epoch}")
                 break
         
