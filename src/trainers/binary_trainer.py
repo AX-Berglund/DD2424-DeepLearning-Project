@@ -176,7 +176,7 @@ class BinaryTrainer:
         
         if scheduler_config is None:
             return None
-            
+        
         # Handle string scheduler type
         if isinstance(scheduler_config, str):
             scheduler_type = scheduler_config.lower()

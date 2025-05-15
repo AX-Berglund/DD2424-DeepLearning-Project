@@ -63,15 +63,15 @@ def main():
     else:  # multiclass
         if args.pseudo_labeling:
             trainer = MultiClassPseudoLabelingTrainer(model, dataloaders, config, logger)
-        else:
+    else:
             trainer = MultiClassTrainer(model, dataloaders, config, logger)
     
     # Train model
-    metrics = trainer.train()
+        metrics = trainer.train()
     
     # Log final metrics
-    logger.info(f"Training completed. Final metrics: {metrics}")
-
+        logger.info(f"Training completed. Final metrics: {metrics}")
+    
 
 if __name__ == '__main__':
     main()

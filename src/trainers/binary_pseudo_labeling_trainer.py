@@ -113,8 +113,9 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
         labeled_loader = self.dataloaders['train']
         unlabeled_loader = self.dataloaders.get('unlabeled')
         
-        # Initialize unlabeled data iterator if we have unlabeled data
-        if unlabeled_loader is not None:
+        # Reset unlabeled data iterator at the start of each epoch
+        unlabeled_iter = None
+        if unlabeled_loader is not None and len(unlabeled_loader) > 0:
             unlabeled_iter = iter(unlabeled_loader)
         
         # Training loop
@@ -137,42 +138,43 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             total_loss = labeled_loss
             
             # If we have unlabeled data and past warmup, use pseudo-labeling
-            if unlabeled_loader is not None and epoch >= self.config['training']['pseudo_labeling']['warmup_epochs']:
+            if unlabeled_iter is not None and epoch >= self.config['training']['pseudo_labeling']['warmup_epochs']:
                 try:
+                    # Get next batch of unlabeled data
                     unlabeled_data, _ = next(unlabeled_iter)
+                    unlabeled_data = unlabeled_data.to(self.device)
+                    
+                    # Get pseudo-labels
+                    unlabeled_outputs = self.model(unlabeled_data)
+                    pseudo_probs = torch.sigmoid(unlabeled_outputs)
+                    
+                    # Create confidence mask
+                    confidence = torch.abs(pseudo_probs - 0.5) * 2  # Scale to [0, 1]
+                    confidence_mask = confidence >= self.confidence_threshold
+                    
+                    if confidence_mask.any():
+                        # Get pseudo-labels for confident predictions
+                        pseudo_labels = (pseudo_probs > 0.5).float()
+                        
+                        # Compute loss for pseudo-labeled data
+                        pseudo_loss = F.binary_cross_entropy_with_logits(
+                            unlabeled_outputs[confidence_mask],
+                            pseudo_labels[confidence_mask]
+                        )
+                        
+                        # Get weight for pseudo-labeled loss
+                        alpha = self.get_pseudo_label_weight(epoch)
+                        
+                        # Combine losses
+                        total_loss = labeled_loss + alpha * pseudo_loss
+                        
+                        # Log pseudo-labeling metrics
+                        self.pseudo_label_metrics['pseudo_label_count'].append(confidence_mask.sum().item())
+                        self.pseudo_label_metrics['pseudo_label_confidence'].append(confidence[confidence_mask].mean().item())
+                        
                 except StopIteration:
+                    # Reset iterator if we've exhausted it
                     unlabeled_iter = iter(unlabeled_loader)
-                    unlabeled_data, _ = next(unlabeled_iter)
-                
-                unlabeled_data = unlabeled_data.to(self.device)
-                
-                # Get pseudo-labels
-                unlabeled_outputs = self.model(unlabeled_data)
-                pseudo_probs = torch.sigmoid(unlabeled_outputs)
-                
-                # Create confidence mask
-                confidence = torch.abs(pseudo_probs - 0.5) * 2  # Scale to [0, 1]
-                confidence_mask = confidence >= self.confidence_threshold
-                
-                if confidence_mask.any():
-                    # Get pseudo-labels for confident predictions
-                    pseudo_labels = (pseudo_probs > 0.5).float()
-                    
-                    # Compute loss for pseudo-labeled data
-                    pseudo_loss = F.binary_cross_entropy_with_logits(
-                        unlabeled_outputs[confidence_mask],
-                        pseudo_labels[confidence_mask]
-                    )
-                    
-                    # Get weight for pseudo-labeled loss
-                    alpha = self.get_pseudo_label_weight(epoch)
-                    
-                    # Combine losses
-                    total_loss = labeled_loss + alpha * pseudo_loss
-                    
-                    # Log pseudo-labeling metrics
-                    self.pseudo_label_metrics['pseudo_label_count'].append(confidence_mask.sum().item())
-                    self.pseudo_label_metrics['pseudo_label_confidence'].append(confidence[confidence_mask].mean().item())
             
             # Backward pass
             total_loss.backward()

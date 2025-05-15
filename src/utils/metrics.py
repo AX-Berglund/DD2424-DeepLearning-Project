@@ -31,8 +31,8 @@ def compute_accuracy(outputs, targets, binary=False):
         return (preds == targets).float().mean().item()
     else:
         # For multi-class classification
-        _, preds = torch.max(outputs, 1)
-        return (preds == targets).float().mean().item()
+    _, preds = torch.max(outputs, 1)
+    return (preds == targets).float().mean().item()
 
 
 def compute_loss(outputs, targets, weights=None):
@@ -81,12 +81,12 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
             targets = targets.squeeze()
     else:
         # For multi-class classification
-        if outputs.ndim > 1:
-            probs = F.softmax(torch.tensor(outputs), dim=1).numpy()
-            preds = np.argmax(outputs, axis=1)
-        else:
-            preds = outputs
-            probs = None
+    if outputs.ndim > 1:
+        probs = F.softmax(torch.tensor(outputs), dim=1).numpy()
+        preds = np.argmax(outputs, axis=1)
+    else:
+        preds = outputs
+        probs = None
     
     # Create metrics dictionary
     metrics = {}

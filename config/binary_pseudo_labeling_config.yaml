@@ -30,7 +30,7 @@ training:
   pseudo_labeling:
     confidence_threshold: 0.8
     rampup_epochs: 10
-    warmup_epochs: 5
+    warmup_epochs: 2
     alpha: 0.5  # Weight for pseudo-labeled loss
 
 logging:
