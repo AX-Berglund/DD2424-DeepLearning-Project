@@ -1,0 +1,49 @@
+data:
+  task: 'semisupervised'
+  task_type: 'binary'
+  batch_size: 32
+  num_workers: 4
+  image_size: 224
+  data_dir: 'data/processed/semisupervised/binary'
+  percentage_labeled: 50  # Can be 100, 50, 10, or 1
+  train_val_test_split: [0.7, 0.15, 0.15]
+  augmentation:
+    use_augmentation: true
+
+model:
+  architecture: 'resnet18'
+  pretrained: true
+  num_classes: 2  # Binary classification (2 classes: cat and dog)
+  dropout_rate: 0.5
+
+training:
+  device: 'cpu'  # Using CPU since CUDA is not available
+  num_epochs: 100
+  early_stopping_patience: 10
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: 'adam'
+  scheduler: 'reduce_on_plateau'
+  strategy: 'full'  # Options: 'full', 'last_layer', 'masked'
+  unfreeze_layers: 1
+
+  pseudo_labeling:
+    confidence_threshold: 0.8
+    rampup_epochs: 10
+    warmup_epochs: 5
+    alpha: 0.5  # Weight for pseudo-labeled loss
+
+logging:
+  experiment_name: "binary_pseudo_labeling"
+  log_dir: "logs"
+  tensorboard: true
+  wandb: false
+  log_interval: 10
+  checkpoint_dir: "checkpoints"  # Added checkpoint directory configuration
+  save_dir: 'checkpoints/binary_pseudo_labeling'
+  save_interval: 5
+  metrics:
+    - accuracy
+    - f1_score
+    - precision
+    - recall 

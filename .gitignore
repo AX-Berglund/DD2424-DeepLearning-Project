@@ -54,6 +54,7 @@ models/*/*.pth
 models/*/*/*.pt
 models/*/*/*.pth
 *.ckpt
+checkpoints/
 
 # Logs
 logs/
@@ -78,3 +79,8 @@ Thumbs.db
 # Project-specific
 *.temp
 temp/
+*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/

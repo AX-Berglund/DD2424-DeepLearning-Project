@@ -1,0 +1,49 @@
+data:
+  task: 'multiclass'
+  batch_size: 32
+  num_workers: 4
+  image_size: 224
+  data_dir: 'data/processed/semisupervised/multiclass'
+  percentage_labeled: 50  # Can be 100, 50, 10, or 1
+  train_val_test_split: [0.7, 0.15, 0.15]
+  augmentation:
+    use_augmentation: true
+
+model:
+  architecture: 'resnet50'
+  pretrained: true
+  num_classes: 37  # 37 breeds (12 cats + 25 dogs)
+  dropout_rate: 0.5
+
+training:
+  device: 'cpu'  # Using CPU since CUDA is not available
+  num_epochs: 50
+  early_stopping_patience: 10
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: 'adam'
+  scheduler:
+    name: cosine
+    T_max: 50
+    eta_min: 0.00001
+  strategy: 'full'  # Options: 'full', 'last_layer', 'masked'
+  unfreeze_layers: 1
+
+  pseudo_labeling:
+    confidence_threshold: 0.95
+    max_unlabeled_batches: 100
+    update_frequency: 1
+    warmup_epochs: 5
+
+logging:
+  experiment_name: multiclass_pseudo_labeling
+  log_dir: 'logs/multiclass_pseudo_labeling'
+  save_dir: 'checkpoints/multiclass_pseudo_labeling'
+  log_interval: 10
+  save_interval: 5
+  tensorboard: true
+  metrics:
+    - accuracy
+    - f1_score
+    - precision
+    - recall 

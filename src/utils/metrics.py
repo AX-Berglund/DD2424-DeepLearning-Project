@@ -12,19 +12,27 @@ from sklearn.metrics import (
 )
 
 
-def compute_accuracy(outputs, targets):
+def compute_accuracy(outputs, targets, binary=False):
     """
     Compute classification accuracy.
     
     Args:
         outputs (torch.Tensor): Model outputs.
         targets (torch.Tensor): Target labels.
+        binary (bool): Whether this is a binary classification task.
         
     Returns:
         float: Accuracy score.
     """
-    _, preds = torch.max(outputs, 1)
-    return (preds == targets).float().mean().item()
+    if binary:
+        # For binary classification, outputs are logits
+        probs = torch.sigmoid(outputs)
+        preds = (probs >= 0.5).float()
+        return (preds == targets).float().mean().item()
+    else:
+        # For multi-class classification
+        _, preds = torch.max(outputs, 1)
+        return (preds == targets).float().mean().item()
 
 
 def compute_loss(outputs, targets, weights=None):
@@ -62,12 +70,23 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
         targets = targets.detach().cpu().numpy()
     
     # Get predictions
-    if outputs.ndim > 1:
-        probs = F.softmax(torch.tensor(outputs), dim=1).numpy()
-        preds = np.argmax(outputs, axis=1)
+    if binary:
+        # For binary classification, outputs are already logits
+        probs = torch.sigmoid(torch.tensor(outputs)).numpy()
+        preds = (probs >= 0.5).astype(int)
+        # Remove extra dimension if present
+        if preds.ndim > 1:
+            preds = preds.squeeze()
+        if targets.ndim > 1:
+            targets = targets.squeeze()
     else:
-        preds = outputs
-        probs = None
+        # For multi-class classification
+        if outputs.ndim > 1:
+            probs = F.softmax(torch.tensor(outputs), dim=1).numpy()
+            preds = np.argmax(outputs, axis=1)
+        else:
+            preds = outputs
+            probs = None
     
     # Create metrics dictionary
     metrics = {}
@@ -77,14 +96,14 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
     
     # For binary classification
     if binary or (class_names is not None and len(class_names) == 2):
-        metrics['precision'] = precision_score(targets, preds, average='binary')
-        metrics['recall'] = recall_score(targets, preds, average='binary')
-        metrics['f1'] = f1_score(targets, preds, average='binary')
+        metrics['precision'] = precision_score(targets, preds, average='binary', zero_division=0)
+        metrics['recall'] = recall_score(targets, preds, average='binary', zero_division=0)
+        metrics['f1'] = f1_score(targets, preds, average='binary', zero_division=0)
         
         # ROC AUC (if probabilities are available)
-        if probs is not None and probs.shape[1] >= 2:
+        if probs is not None:
             try:
-                metrics['roc_auc'] = roc_auc_score(targets, probs[:, 1])
+                metrics['roc_auc'] = roc_auc_score(targets, probs)
             except Exception:
                 metrics['roc_auc'] = float('nan')
     else:
