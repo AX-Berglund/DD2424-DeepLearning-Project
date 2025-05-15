@@ -18,28 +18,53 @@ model:
 
 training:
   device: 'cpu'  # Using CPU since CUDA is not available
+  strategy: "gradual_unfreeze"  # Changed from multi_layer to gradual_unfreeze
+  unfreeze_layers: 1
+  
+  # Gradual unfreezing settings
+  gradual_unfreeze:
+    initial_layers: 1
+    unfreeze_every: 5  # Unfreeze every 5 epochs
+  
+  # Multiple learning rates for different layer groups
+  layer_specific_lr:
+    enabled: true
+    base_lr: 0.0001    # Lower learning rate for pre-trained layers
+    new_layers_lr: 0.001
+  
+  # Optimization settings
+  optimizer: "adamw"
+  learning_rate: 0.0001  # Lower base learning rate
+  weight_decay: 0.01
+  momentum: 0.9
+  
+  # Training schedule
   num_epochs: 50
   early_stopping_patience: 10
-  learning_rate: 0.001
-  weight_decay: 0.0001
-  optimizer: 'adam'
+  
+  # Learning rate scheduler
   scheduler:
-    name: cosine
+    name: "cosine"
     T_max: 50
     eta_min: 0.00001
-  strategy: 'full'  # Options: 'full', 'last_layer', 'masked'
-  unfreeze_layers: 1
-
+  
+  # Batch normalization updates
+  update_batch_norm: true
+  
+  # Pseudo-labeling settings
   pseudo_labeling:
-    confidence_threshold: 0.8
+    confidence_threshold: 0.7  # Lower threshold for more pseudo-labels
     max_unlabeled_batches: 100
     update_frequency: 1
     warmup_epochs: 5
+    rampup_epochs: 10  # Longer rampup period
+    alpha: 0.5  # Lower weight for pseudo-labeled loss
 
 logging:
   experiment_name: multiclass_pseudo_labeling
   log_dir: 'logs/multiclass_pseudo_labeling'
   save_dir: 'checkpoints/multiclass_pseudo_labeling'
+  checkpoint_dir: 'checkpoints/multiclass_pseudo_labeling'  # Directory for saving model checkpoints
   log_interval: 10
   save_interval: 5
   tensorboard: true

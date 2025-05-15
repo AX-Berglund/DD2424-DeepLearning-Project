@@ -108,13 +108,13 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
                 metrics['roc_auc'] = float('nan')
     else:
         # For multi-class classification
-        metrics['precision_macro'] = precision_score(targets, preds, average='macro')
-        metrics['recall_macro'] = recall_score(targets, preds, average='macro')
-        metrics['f1_macro'] = f1_score(targets, preds, average='macro')
+        metrics['precision_macro'] = precision_score(targets, preds, average='macro', zero_division=0)
+        metrics['recall_macro'] = recall_score(targets, preds, average='macro', zero_division=0)
+        metrics['f1_macro'] = f1_score(targets, preds, average='macro', zero_division=0)
         
-        metrics['precision_weighted'] = precision_score(targets, preds, average='weighted')
-        metrics['recall_weighted'] = recall_score(targets, preds, average='weighted')
-        metrics['f1_weighted'] = f1_score(targets, preds, average='weighted')
+        metrics['precision_weighted'] = precision_score(targets, preds, average='weighted', zero_division=0)
+        metrics['recall_weighted'] = recall_score(targets, preds, average='weighted', zero_division=0)
+        metrics['f1_weighted'] = f1_score(targets, preds, average='weighted', zero_division=0)
     
     # Confusion matrix
     cm = confusion_matrix(targets, preds)
@@ -126,7 +126,11 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
     
     # Per-class metrics
     if class_names is not None:
-        metrics['class_names'] = class_names
+        # Get unique classes in the data
+        unique_classes = np.unique(targets)
+        present_class_names = [class_names[i] for i in unique_classes]
+        
+        metrics['class_names'] = present_class_names
         
         # Compute per-class accuracy
         per_class_acc = {}
@@ -139,8 +143,19 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
         metrics['per_class_accuracy'] = per_class_acc
         
         # Classification report
-        report = classification_report(targets, preds, target_names=class_names, output_dict=True)
-        metrics['classification_report'] = report
+        try:
+            report = classification_report(
+                targets, 
+                preds, 
+                labels=unique_classes,
+                target_names=present_class_names, 
+                output_dict=True,
+                zero_division=0
+            )
+            metrics['classification_report'] = report
+        except Exception as e:
+            print(f"Warning: Could not generate classification report: {e}")
+            metrics['classification_report'] = {}
     
     return metrics
 

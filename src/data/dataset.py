@@ -136,11 +136,10 @@ class SemiSupervisedPetDataset(PetDataset):
         self.task = task
         
         # Construct the data directory path
+        percentage_dir = f"{percentage_labeled}_percent_labeled"
         if split == 'unlabeled':
-            percentage_dir = f"{percentage_labeled}_percent_labeled"
-            self.data_dir = self.root_dir / percentage_dir / 'unlabeled'
+            self.data_dir = self.root_dir / percentage_dir / 'unlabeled' / 'images'  # Added 'images' subdirectory
         else:
-            percentage_dir = f"{percentage_labeled}_percent_labeled"
             self.data_dir = self.root_dir / percentage_dir / 'labeled' / split
         
         # Get class folders from the appropriate directory
@@ -149,7 +148,7 @@ class SemiSupervisedPetDataset(PetDataset):
             self.class_to_idx = {'cat': 0, 'dog': 1}
         else:
             # For multiclass, get classes from the labeled directory
-            labeled_dir = self.root_dir / percentage_dir / 'labeled' / split
+            labeled_dir = self.root_dir / percentage_dir / 'labeled' / 'train'  # Always use train split for class mapping
             if not labeled_dir.exists():
                 raise ValueError(f"Labeled directory not found: {labeled_dir}")
             self.classes = sorted([d for d in os.listdir(labeled_dir) 
@@ -160,12 +159,16 @@ class SemiSupervisedPetDataset(PetDataset):
         self.samples = []
         if split == 'unlabeled':
             # For unlabeled data, we don't have class directories
+            if not self.data_dir.exists():
+                raise ValueError(f"Unlabeled data directory not found: {self.data_dir}")
             for img_name in os.listdir(self.data_dir):
                 if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
                     img_path = os.path.join(self.data_dir, img_name)
                     self.samples.append((img_path, -1))  # -1 is the dummy label for unlabeled data
         else:
             # For labeled data, we have class directories
+            if not self.data_dir.exists():
+                raise ValueError(f"Labeled data directory not found: {self.data_dir}")
             for class_name in self.classes:
                 class_dir = os.path.join(self.data_dir, class_name)
                 if os.path.exists(class_dir):

@@ -29,6 +29,9 @@ class MultiClassPseudoLabelingTrainer(MultiClassTrainer):
         """
         super().__init__(model, dataloaders, config, logger)
         
+        # Initialize loss function
+        self.criterion = nn.CrossEntropyLoss()
+        
         # Get pseudo-labeling settings
         self.confidence_threshold = config['training']['pseudo_labeling']['confidence_threshold']
         self.rampup_epochs = config['training']['pseudo_labeling']['rampup_epochs']
@@ -93,144 +96,74 @@ class MultiClassPseudoLabelingTrainer(MultiClassTrainer):
         return pseudo_labels, mask
     
     def train_epoch(self, epoch):
-        """
-        Train for one epoch with pseudo-labeling.
-        
-        Args:
-            epoch (int): Current epoch.
-            
-        Returns:
-            tuple: Tuple of (epoch_loss, epoch_accuracy).
-        """
-        # Set model to training mode
+        """Train for one epoch."""
         self.model.train()
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
         
-        # Apply fine-tuning strategy if model supports it
-        if hasattr(self.model, 'apply_strategy'):
-            strategy = self.config['training']['strategy']
-            self.model.apply_strategy(strategy, epoch)
-        
-        # Initialize metrics tracker
-        tracker = MetricTracker()
-        batch_idx = 0
-        
-        # Get data loaders
+        # Get labeled and unlabeled data loaders
         labeled_loader = self.dataloaders['train']
+        unlabeled_loader = self.dataloaders['unlabeled']
         
-        # Calculate pseudo-label weight
-        pseudo_weight = self.get_pseudo_label_weight(epoch)
+        # Create progress bar
+        pbar = tqdm(zip(labeled_loader, unlabeled_loader), total=len(labeled_loader))
         
-        # Training loop
-        if self.has_unlabeled_data:
-            # Train with both labeled and unlabeled data
-            for (labeled_data, labeled_targets), (unlabeled_data, _) in zip(
-                labeled_loader, self.unlabeled_loader
-            ):
-                # Move data to device
-                labeled_data = labeled_data.to(self.device)
-                labeled_targets = labeled_targets.to(self.device)
-                unlabeled_data = unlabeled_data.to(self.device)
-                
-                # Zero gradients
-                self.optimizer.zero_grad()
-                
-                # Forward pass for labeled data
-                labeled_outputs = self.model(labeled_data)
-                labeled_loss = F.cross_entropy(labeled_outputs, labeled_targets)
-                
-                # Generate pseudo-labels for unlabeled data
-                pseudo_labels, mask = self.generate_pseudo_labels(unlabeled_data)
-                
-                # Forward pass for unlabeled data
+        for (labeled_data, labeled_targets), (unlabeled_data, _) in pbar:
+            # Move data to device
+            labeled_data = labeled_data.to(self.device)
+            labeled_targets = labeled_targets.to(self.device)
+            unlabeled_data = unlabeled_data.to(self.device)
+            
+            # Forward pass for labeled data
+            labeled_outputs = self.model(labeled_data)
+            labeled_loss = self.criterion(labeled_outputs, labeled_targets)
+            
+            # Forward pass for unlabeled data
+            with torch.no_grad():
                 unlabeled_outputs = self.model(unlabeled_data)
-                unlabeled_loss = F.cross_entropy(
-                    unlabeled_outputs[mask], 
+                pseudo_labels = torch.argmax(unlabeled_outputs, dim=1)
+                confidence = torch.max(torch.softmax(unlabeled_outputs, dim=1), dim=1)[0]
+            
+            # Create mask for confident predictions
+            mask = confidence > self.confidence_threshold
+            
+            # Compute pseudo-label loss if there are confident predictions
+            if mask.any():
+                unlabeled_loss = self.criterion(
+                    unlabeled_outputs[mask],
                     pseudo_labels[mask]
-                ) if mask.any() else torch.tensor(0.0, device=self.device)
+                )
+                
+                # Compute weight for pseudo-label loss
+                weight = self.get_pseudo_label_weight(epoch)
                 
                 # Combine losses
-                total_loss = labeled_loss + pseudo_weight * unlabeled_loss
-                
-                # Backward pass
-                total_loss.backward()
-                
-                # Apply gradient masks if using masked fine-tuning
-                if hasattr(self.model, 'apply_masks'):
-                    self.model.apply_masks()
-                
-                # Update weights
-                self.optimizer.step()
-                
-                # Update metrics (only for labeled data)
-                tracker.update(labeled_loss.item(), labeled_outputs, labeled_targets)
-                
-                # Log batch progress
-                self.logger.log_batch(
-                    epoch=epoch,
-                    batch_idx=batch_idx,
-                    n_batches=len(labeled_loader),
-                    loss=total_loss.item(),
-                    acc=compute_accuracy(labeled_outputs, labeled_targets)
-                )
-                batch_idx += 1
-                
-                # Update pseudo-label metrics
-                if mask.any():
-                    pseudo_acc = compute_accuracy(
-                        unlabeled_outputs[mask], 
-                        pseudo_labels[mask]
-                    )
-                    self.pseudo_label_metrics['pseudo_label_accuracy'].append(pseudo_acc)
-                    self.pseudo_label_metrics['pseudo_label_confidence'].append(
-                        F.softmax(unlabeled_outputs[mask], dim=1).max(dim=1)[0].mean().item()
-                    )
-                    self.pseudo_label_metrics['pseudo_label_count'].append(mask.sum().item())
-        else:
-            # Train with only labeled data
-            for labeled_data, labeled_targets in labeled_loader:
-                # Move data to device
-                labeled_data = labeled_data.to(self.device)
-                labeled_targets = labeled_targets.to(self.device)
-                
-                # Zero gradients
-                self.optimizer.zero_grad()
-                
-                # Forward pass
-                labeled_outputs = self.model(labeled_data)
-                total_loss = F.cross_entropy(labeled_outputs, labeled_targets)
-                
-                # Backward pass
-                total_loss.backward()
-                
-                # Apply gradient masks if using masked fine-tuning
-                if hasattr(self.model, 'apply_masks'):
-                    self.model.apply_masks()
-                
-                # Update weights
-                self.optimizer.step()
-                
-                # Update metrics
-                tracker.update(total_loss.item(), labeled_outputs, labeled_targets)
-                
-                # Log batch progress
-                self.logger.log_batch(
-                    epoch=epoch,
-                    batch_idx=batch_idx,
-                    n_batches=len(labeled_loader),
-                    loss=total_loss.item(),
-                    acc=compute_accuracy(labeled_outputs, labeled_targets)
-                )
-                batch_idx += 1
+                loss = labeled_loss + weight * unlabeled_loss
+            else:
+                loss = labeled_loss
+            
+            # Backward pass and optimization
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            # Update learning rate scheduler
+            if self.scheduler is not None:
+                self.scheduler.step()
+            
+            # Update metrics
+            total_loss += loss.item()
+            total_correct += (labeled_outputs.argmax(dim=1) == labeled_targets).sum().item()
+            total_samples += labeled_targets.size(0)
+            
+            # Update progress bar
+            pbar.set_description(
+                f'Epoch {epoch} | Loss: {loss.item():.4f} | Acc: {total_correct/total_samples:.4f}'
+            )
         
-        # Get epoch metrics
-        metrics = tracker.get_metrics()
+        # Compute average metrics
+        avg_loss = total_loss / len(labeled_loader)
+        avg_acc = total_correct / total_samples
         
-        # Add pseudo-label metrics if we have unlabeled data
-        if self.has_unlabeled_data and self.pseudo_label_metrics['pseudo_label_accuracy']:
-            metrics.update({
-                'pseudo_label_accuracy': np.mean(self.pseudo_label_metrics['pseudo_label_accuracy']),
-                'pseudo_label_confidence': np.mean(self.pseudo_label_metrics['pseudo_label_confidence']),
-                'pseudo_label_count': np.mean(self.pseudo_label_metrics['pseudo_label_count'])
-            })
-        
-        return metrics['loss'], metrics['accuracy'] 
+        return avg_loss, avg_acc 
