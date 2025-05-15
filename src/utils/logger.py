@@ -124,21 +124,21 @@ class Logger:
         """Log info message."""
         # Only log to root logger if no handlers exist
         if not logging.getLogger().handlers:
-        logging.info(message)
+            logging.info(message)
         self.file_logger.info(message)
     
     def warning(self, message):
         """Log warning message."""
         # Only log to root logger if no handlers exist
         if not logging.getLogger().handlers:
-        logging.warning(message)
+            logging.warning(message)
         self.file_logger.warning(message)
     
     def error(self, message):
         """Log error message."""
         # Only log to root logger if no handlers exist
         if not logging.getLogger().handlers:
-        logging.error(message)
+            logging.error(message)
         self.file_logger.error(message)
     
     def start_epoch(self, epoch):

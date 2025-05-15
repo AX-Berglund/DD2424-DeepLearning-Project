@@ -1,5 +1,6 @@
 data:
-  task: 'multiclass'
+  task: 'semisupervised'
+  task_type: 'multiclass'
   batch_size: 32
   num_workers: 4
   image_size: 224
@@ -30,7 +31,7 @@ training:
   unfreeze_layers: 1
 
   pseudo_labeling:
-    confidence_threshold: 0.95
+    confidence_threshold: 0.8
     max_unlabeled_batches: 100
     update_frequency: 1
     warmup_epochs: 5

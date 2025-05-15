@@ -84,58 +84,37 @@ The data preparation scripts will:
 
 ## Running Experiments
 
-### Supervised Learning
+### Available Command-Line Options
 
-#### Basic Binary Classification (Dog vs Cat)
+The main script supports the following command-line arguments:
+
+- `--config`: Path to the configuration YAML file (required)
+- `--pseudo-labeling`: Flag to enable pseudo-labeling training (optional)
+- `--percentage`: Percentage of labeled data to use, must be one of [100, 50, 10, 1] (optional, default is 50, only applies when using pseudo-labeling)
+
+### Standard Training (Supervised Learning)
 
 ```bash
 python main.py --config config/binary_config.yaml
 ```
 
-#### Multi-class Classification (37 Breeds)
-
-```bash
-python main.py --config config/multiclass_config.yaml
-```
+This runs the training with the settings specified in the config file, which can be either binary (dog vs cat) or multiclass (37 breeds) classification.
 
 ### Semi-supervised Learning with Pseudo-labeling
 
-#### Binary Classification with Pseudo-labeling
+For pseudo-labeling, use the `--pseudo-labeling` flag and specify the percentage of labeled data:
 
 ```bash
+python main.py --config config/binary_pseudo_labeling_config.yaml --pseudo-labeling --percentage 100
 python main.py --config config/binary_pseudo_labeling_config.yaml --pseudo-labeling --percentage 50
+python main.py --config config/binary_pseudo_labeling_config.yaml --pseudo-labeling --percentage 10
+python main.py --config config/binary_pseudo_labeling_config.yaml --pseudo-labeling --percentage 1
 ```
 
-#### Multi-class Classification with Pseudo-labeling
+The same applies for multiclass classification:
 
 ```bash
 python main.py --config config/multiclass_pseudo_labeling_config.yaml --pseudo-labeling --percentage 50
-```
-
-The `--percentage` flag specifies [100, 50, 10, 1] what percentage of the training data should be labeled (the rest will be used as unlabeled data).
-
-### Specifying Fine-tuning Strategy
-
-You can override the fine-tuning strategy specified in the config file:
-
-```bash
-# Only fine-tune the last layer
-python main.py --config config/multiclass_config.yaml --strategy last_layer
-
-# Fine-tune multiple layers simultaneously
-python main.py --config config/multiclass_config.yaml --strategy multi_layer
-
-# Gradually unfreeze layers during training
-python main.py --config config/multiclass_config.yaml --strategy gradual_unfreeze
-
-# Only fine-tune batch normalization parameters
-python main.py --config config/multiclass_config.yaml --strategy batch_norm_only
-```
-
-### Evaluating a Trained Model
-
-```bash
-python main.py --config config/multiclass_config.yaml --eval --checkpoint checkpoints/multiclass/best_model.pt
 ```
 
 ## Experiment Configuration
@@ -186,4 +165,3 @@ Configuration files are in YAML format and define all aspects of the experiment:
 The training results and analysis can be found in the following notebooks:
 - `notebooks/01_binary_result_analysis.ipynb`: Analysis of binary classification results
 - `notebooks/02_multiclass_result_analysis.ipynb`: Analysis of multi-class classification results
-- `notebooks/03_pseudo_labeling_analysis.ipynb`: Analysis of semi-supervised learning results
