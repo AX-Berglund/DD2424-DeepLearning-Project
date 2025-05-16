@@ -72,6 +72,9 @@ def main():
     # Log final metrics
     logger.info(f"Training completed. Final metrics: {metrics}")
     
+    # Clean up logger resources
+    logger.finish()
+    
 
 if __name__ == '__main__':
     main()

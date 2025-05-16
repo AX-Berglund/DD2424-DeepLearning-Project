@@ -11,6 +11,8 @@ num_workers: 4
 data:
   dataset_path: "data/raw"
   processed_path: "data/processed"
+  task_type: 'multiclass'
+  task: 'supervised'
   image_size: 224  # ResNet default input size
   batch_size: 32
   train_val_split: 0.8  # 80% training, 20% validation
