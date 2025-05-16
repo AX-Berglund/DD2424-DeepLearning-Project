@@ -337,19 +337,45 @@ def get_transforms(config, split='train'):
     """
     # Base transforms
     base_transforms = [
-        transforms.Resize((config['image_size'], config['image_size'])),
+        transforms.Resize((config['data']['image_size'], config['data']['image_size'])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ]
     
     # Add augmentation for training
-    if split == 'train' and config.get('augmentation', {}).get('use_augmentation', False):
-        augmentation_transforms = [
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.RandomResizedCrop(config['image_size'], scale=(0.8, 1.0))
-        ]
+    if split == 'train' and config['data']['augmentation']['use_augmentation']:
+        augmentation_transforms = []
+        
+        # Add augmentations based on config
+        aug_config = config['data']['augmentation']
+        
+        if aug_config.get('horizontal_flip', False):
+            augmentation_transforms.append(transforms.RandomHorizontalFlip())
+        
+        if aug_config.get('rotation_angle', 0) > 0:
+            augmentation_transforms.append(
+                transforms.RandomRotation(aug_config['rotation_angle'])
+            )
+        
+        if aug_config.get('random_crop', False):
+            augmentation_transforms.append(
+                transforms.RandomResizedCrop(
+                    config['data']['image_size'],
+                    scale=(0.8, 1.0),
+                    ratio=(0.9, 1.1)
+                )
+            )
+        
+        if aug_config.get('color_jitter', False):
+            augmentation_transforms.append(
+                transforms.ColorJitter(
+                    brightness=0.2,
+                    contrast=0.2,
+                    saturation=0.2,
+                    hue=0.1
+                )
+            )
+        
         return transforms.Compose(augmentation_transforms + base_transforms)
     
     return transforms.Compose(base_transforms)
@@ -372,62 +398,62 @@ def create_data_loaders(config):
     }
     
     # Create datasets
-    if config['task'] == 'binary':
+    if config['data']['task_type'] == 'binary':
         datasets = {
             split: BinaryPetDataset(
-                root_dir=config['data_dir'],
+                root_dir=config['data']['dataset_path'],
                 split=split,
                 transform=transforms[split],
-                percentage_labeled=config['percentage_labeled']
+                percentage_labeled=config.get('percentage_labeled')
             )
             for split in ['train', 'val', 'test']
         }
-    elif config['task'] == 'multiclass':
+    elif config['data']['task_type'] == 'multiclass':
         datasets = {
             split: MultiClassPetDataset(
-                root_dir=config['data_dir'],
+                root_dir=config['data']['dataset_path'],
                 split=split,
                 transform=transforms[split],
-                percentage_labeled=config['percentage_labeled']
+                percentage_labeled=config.get('percentage_labeled')
             )
             for split in ['train', 'val', 'test']
         }
-    elif config['task'] == 'semisupervised':
+    elif config['data']['task_type'] == 'semisupervised':
         # Create labeled dataset
         labeled_dataset = SemiSupervisedPetDataset(
-            root_dir=config['data_dir'],
+            root_dir=config['data']['dataset_path'],
             split='train',
             transform=transforms['train'],
-            task=config.get('task_type', 'multiclass'),
-            percentage_labeled=config['percentage_labeled']
+            task=config['data']['task_type'],
+            percentage_labeled=config.get('percentage_labeled')
         )
         
         # Create validation and test datasets
         val_dataset = SemiSupervisedPetDataset(
-            root_dir=config['data_dir'],
+            root_dir=config['data']['dataset_path'],
             split='val',
             transform=transforms['val'],
-            task=config.get('task_type', 'multiclass'),
-            percentage_labeled=config['percentage_labeled']
+            task=config['data']['task_type'],
+            percentage_labeled=config.get('percentage_labeled')
         )
         test_dataset = SemiSupervisedPetDataset(
-            root_dir=config['data_dir'],
+            root_dir=config['data']['dataset_path'],
             split='test',
             transform=transforms['test'],
-            task=config.get('task_type', 'multiclass'),
-            percentage_labeled=config['percentage_labeled']
+            task=config['data']['task_type'],
+            percentage_labeled=config.get('percentage_labeled')
         )
         
         # Create unlabeled dataset if it exists
-        percentage_dir = f"{config['percentage_labeled']}_percent_labeled"
-        unlabeled_dir = Path(config['data_dir']) / percentage_dir / 'unlabeled'
+        percentage_dir = f"{config.get('percentage_labeled')}_percent_labeled"
+        unlabeled_dir = Path(config['data']['dataset_path']) / percentage_dir / 'unlabeled'
         if unlabeled_dir.exists():
             unlabeled_dataset = SemiSupervisedPetDataset(
-                root_dir=config['data_dir'],
+                root_dir=config['data']['dataset_path'],
                 split='unlabeled',
                 transform=transforms['train'],
-                task=config.get('task_type', 'multiclass'),
-                percentage_labeled=config['percentage_labeled']
+                task=config['data']['task_type'],
+                percentage_labeled=config.get('percentage_labeled')
             )
         else:
             unlabeled_dataset = None
@@ -439,13 +465,13 @@ def create_data_loaders(config):
             'unlabeled': unlabeled_dataset
         }
     else:
-        raise ValueError(f"Unknown task type: {config['task']}")
+        raise ValueError(f"Unknown task type: {config['data']['task_type']}")
     
     # Create data loaders
     dataloaders = {
         split: torch.utils.data.DataLoader(
             dataset,
-            batch_size=config['batch_size'],
+            batch_size=config['data']['batch_size'],
             shuffle=(split == 'train'),
             num_workers=config['num_workers'],
             pin_memory=True

@@ -575,76 +575,65 @@ def visualize_parameter_changes(model, original_params):
     return fig
 
 
-def visualize_model_predictions(model, dataloader, class_names=None, device='cpu', num_samples=8):
+def visualize_model_predictions(model, dataloader, class_names, device, num_images=8):
     """
     Visualize model predictions on a batch of images.
     
     Args:
-        model (nn.Module): Model to evaluate.
-        dataloader (torch.utils.data.DataLoader): Data loader containing images.
-        class_names (list, optional): List of class names.
-        device (str): Device to run model on.
-        num_samples (int): Number of samples to visualize.
+        model (nn.Module): Trained model.
+        dataloader (torch.utils.data.DataLoader): Data loader.
+        class_names (list): List of class names.
+        device (torch.device): Device to run model on.
+        num_images (int): Number of images to visualize.
         
     Returns:
-        matplotlib.figure.Figure: Figure with predictions visualization.
+        matplotlib.figure.Figure: Figure with prediction visualizations.
     """
     # Set model to evaluation mode
     model.eval()
     
     # Get a batch of images
-    images, targets = next(iter(dataloader))
-    images = images[:num_samples]
-    targets = targets[:num_samples]
+    images, labels = next(iter(dataloader))
+    images = images[:num_images].to(device)
+    labels = labels[:num_images].cpu().numpy()
     
-    # Move to device
-    images = images.to(device)
-    
-    # Get predictions
+    # Get model predictions
     with torch.no_grad():
         outputs = model(images)
-        probabilities = torch.softmax(outputs, dim=1)
-        predictions = torch.argmax(outputs, dim=1)
+        if outputs.shape[1] == 1:  # Binary classification
+            probs = torch.sigmoid(outputs)
+            preds = (probs >= 0.5).long().squeeze()
+        else:  # Multi-class classification
+            _, preds = torch.max(outputs, 1)
     
-    # Move tensors to CPU for visualization
-    images = images.cpu()
-    predictions = predictions.cpu()
-    probabilities = probabilities.cpu()
+    # Convert predictions to numpy
+    preds = preds.cpu().numpy()
     
     # Create figure
-    fig, axes = plt.subplots(2, num_samples, figsize=(2*num_samples, 4))
+    fig, axes = plt.subplots(2, num_images // 2, figsize=(15, 8))
+    axes = axes.flatten()
     
-    # Plot images and predictions
-    for i in range(num_samples):
-        # Plot image
-        img = images[i].permute(1, 2, 0)
-        # Denormalize if needed
-        if img.min() < 0:
-            img = (img + 1) / 2
-        img = torch.clamp(img, 0, 1)
-        
-        axes[0, i].imshow(img)
-        axes[0, i].axis('off')
-        
-        # Add prediction text
-        pred_class = predictions[i].item()
-        true_class = targets[i].item()
-        pred_prob = probabilities[i, pred_class].item()
-        
-        title = f'Pred: {class_names[pred_class] if class_names else pred_class}\n'
-        title += f'True: {class_names[true_class] if class_names else true_class}\n'
-        title += f'Prob: {pred_prob:.2f}'
-        
-        axes[0, i].set_title(title, fontsize=8)
-        
-        # Plot probability distribution
-        probs = probabilities[i].numpy()
-        axes[1, i].bar(range(len(probs)), probs)
-        axes[1, i].set_xticks(range(len(probs)))
-        if class_names:
-            axes[1, i].set_xticklabels(class_names, rotation=45, ha='right')
-        axes[1, i].set_ylim(0, 1)
-        axes[1, i].set_title('Class Probabilities', fontsize=8)
+    # Compute mean and std for unnormalization
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
     
-    plt.tight_layout()
+    # Plot images with predictions
+    for i, ax in enumerate(axes):
+        # Unnormalize image
+        img = images[i].cpu().numpy().transpose((1, 2, 0))
+        img = std * img + mean
+        img = np.clip(img, 0, 1)
+        
+        # Display image
+        ax.imshow(img)
+        
+        # Set title with prediction result
+        title_color = "green" if preds[i] == labels[i] else "red"
+        ax.set_title(
+            f"True: {class_names[int(labels[i])]}\nPred: {class_names[int(preds[i])]}",
+            color=title_color
+        )
+        ax.axis('off')
+    
+    fig.tight_layout()
     return fig

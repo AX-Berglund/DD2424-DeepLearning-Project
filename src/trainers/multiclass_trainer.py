@@ -21,7 +21,7 @@ from src.utils.visualization import (
     visualize_model_predictions, plot_to_image, 
     visualize_class_distribution, visualize_parameter_changes
 )
-from src.trainers.binary_trainer import EarlyStopping  # Import EarlyStopping class
+from src.utils.early_stopping import EarlyStopping
 
 
 class MultiClassTrainer:

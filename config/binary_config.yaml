@@ -3,18 +3,17 @@
 # General settings
 experiment_name: "binary_classification"
 seed: 42
-device: "cuda"  # or "cpu"
+device: "mps"  # Changed to match training device
 num_workers: 4
 
 # Data settings
 data:
-  dataset_path: "data/raw"
+  dataset_path: "data/processed/binary"  # Updated path to match actual data location
   processed_path: "data/processed"
-  task_type: 'binary'
-  task: 'supervised'
   image_size: 224  # ResNet default input size
   batch_size: 32
   train_val_split: 0.8  # 80% training, 20% validation
+  task_type: "binary"  # Type of classification task (binary or multiclass)
   
   # Augmentation settings
   augmentation:
@@ -29,22 +28,25 @@ model:
   architecture: "resnet18"  # Options: resnet18, resnet34, resnet50
   pretrained: true
   num_classes: 2  # Binary: dog vs cat
+  dropout_rate: 0.5  # Dropout rate for regularization
 
 # Training settings
 training:
   # Training strategy
   strategy: "last_layer"  # Options: last_layer, multi_layer, gradual_unfreeze
   unfreeze_layers: 1      # Number of layers to unfreeze (for multi_layer)
+  device: "mps"          # Device to use for training (cuda or cpu)
   
   # Optimization settings
   optimizer: "adam"       # Options: adam, sgd
-  learning_rate: 0.001
+  learning_rate: 0.001   # Reduced learning rate for better stability
   weight_decay: 0.0001    # L2 regularization
   momentum: 0.9           # Only for SGD
   
   # Training schedule
-  num_epochs: 10 
-  early_stopping_patience: 3
+  num_epochs: 20          # Increased number of epochs
+  early_stopping_patience: 5  # Increased patience
+  
   
   # Learning rate scheduler
   lr_scheduler:
@@ -53,8 +55,9 @@ training:
     step_size: 5          # For StepLR
     gamma: 0.1            # Factor to reduce LR
     
+    
   # Batch normalization updates
-  update_batch_norm: false
+  update_batch_norm: true  # Enable batch norm updates
   
 # Logging settings
 logging:
