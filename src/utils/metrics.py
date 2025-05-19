@@ -128,6 +128,8 @@ def compute_metrics(outputs, targets, class_names=None, binary=False):
     if class_names is not None:
         # Get unique classes in the data
         unique_classes = np.unique(targets)
+        # Convert to integers for indexing
+        unique_classes = unique_classes.astype(int)
         present_class_names = [class_names[i] for i in unique_classes]
         
         metrics['class_names'] = present_class_names

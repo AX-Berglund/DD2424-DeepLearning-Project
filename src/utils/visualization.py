@@ -11,6 +11,7 @@ from PIL import Image
 import torchvision
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
+import seaborn as sns
 
 
 def plot_to_image(fig):
@@ -647,4 +648,47 @@ def visualize_model_predictions(model, dataloader, class_names=None, device='cpu
         axes[1, i].set_title('Class Probabilities', fontsize=8)
     
     plt.tight_layout()
+    return fig
+
+
+def confusion_matrix_to_figure(confusion_matrix, class_names):
+    """
+    Create a figure with a confusion matrix visualization.
+    
+    Args:
+        confusion_matrix (numpy.ndarray): Confusion matrix.
+        class_names (list): List of class names.
+        
+    Returns:
+        matplotlib.figure.Figure: Figure containing the confusion matrix plot.
+    """
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Normalize confusion matrix
+    cm_normalized = confusion_matrix.astype('float') / confusion_matrix.sum(axis=1)[:, np.newaxis]
+    
+    # Create heatmap
+    sns.heatmap(
+        cm_normalized,
+        annot=True,
+        fmt='.2f',
+        cmap='Blues',
+        xticklabels=class_names,
+        yticklabels=class_names,
+        ax=ax
+    )
+    
+    # Set labels and title
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('True')
+    ax.set_title('Confusion Matrix')
+    
+    # Rotate x-axis labels for better readability
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
     return fig

@@ -11,6 +11,9 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, ReduceLROnPlateau
 import numpy as np
 from tqdm import tqdm
+import os
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 from src.utils.logger import MetricTracker
 from src.utils.metrics import (
@@ -19,7 +22,8 @@ from src.utils.metrics import (
 )
 from src.utils.visualization import (
     visualize_model_predictions, plot_to_image, 
-    visualize_class_distribution, visualize_parameter_changes
+    visualize_class_distribution, visualize_parameter_changes,
+    confusion_matrix_to_figure
 )
 from src.trainers.binary_trainer import EarlyStopping  # Import EarlyStopping class
 
@@ -499,10 +503,62 @@ class MultiClassTrainer:
         # Log metrics
         self.logger.log_metrics(0, metrics, split=split)
         
-        # Create and log confusion matrix visualization
-        from src.utils.visualization import confusion_matrix_to_figure
-        fig = confusion_matrix_to_figure(metrics['confusion_matrix'], self.class_names)
-        self.logger.log_image(f"confusion_matrix_{split}", plot_to_image(fig))
+        # Create and save visualizations
+        # Create timestamp for unique filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create directory if it doesn't exist
+        save_dir = os.path.join("results", "graphs", split)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 1. Confusion Matrix
+        fig_cm = confusion_matrix_to_figure(metrics['confusion_matrix'], self.class_names)
+        plt.figure(fig_cm.number)
+        plt.savefig(os.path.join(save_dir, f"confusion_matrix_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 2. Model Predictions
+        fig_pred = visualize_model_predictions(
+            model=self.model,
+            dataloader=data_loader,
+            class_names=self.class_names,
+            device=self.device
+        )
+        plt.figure(fig_pred.number)
+        plt.savefig(os.path.join(save_dir, f"predictions_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 3. Per-class Accuracy Bar Plot
+        plt.figure(figsize=(12, 6))
+        per_class_acc = metrics['per_class_accuracy']
+        classes = list(per_class_acc.keys())
+        accuracies = list(per_class_acc.values())
+        
+        plt.bar(range(len(classes)), accuracies)
+        plt.xticks(range(len(classes)), classes, rotation=45, ha='right')
+        plt.ylabel('Accuracy')
+        plt.title('Per-class Accuracy')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"per_class_accuracy_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 4. Feature Space Visualization (if dataset is not too large)
+        if len(all_targets) <= 1000:  # Only for smaller datasets
+            fig_feat = visualize_feature_space(
+                model=self.model,
+                dataloader=data_loader,
+                device=self.device,
+                class_names=self.class_names,
+                num_samples=min(1000, len(all_targets))
+            )
+            if fig_feat is not None:
+                plt.figure(fig_feat.number)
+                plt.savefig(os.path.join(save_dir, f"feature_space_{timestamp}.png"))
+                plt.show()
+                plt.close()
         
         return metrics
     
@@ -515,6 +571,13 @@ class MultiClassTrainer:
         """
         # Get number of epochs
         num_epochs = self.config['training']['num_epochs']
+        
+        # Initialize lists to store metrics
+        train_losses = []
+        val_losses = []
+        train_accs = []
+        val_accs = []
+        learning_rates = []
         
         # Training loop
         for epoch in range(num_epochs):
@@ -536,6 +599,13 @@ class MultiClassTrainer:
             
             # Get current learning rate
             current_lr = self.optimizer.param_groups[0]['lr']
+            
+            # Store metrics
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            train_accs.append(train_acc)
+            val_accs.append(val_acc)
+            learning_rates.append(current_lr)
             
             # Log epoch end
             self.logger.end_epoch(
@@ -574,6 +644,56 @@ class MultiClassTrainer:
         self.logger.info("Evaluating model on test set...")
         test_metrics = self.evaluate(split='test')
         self.logger.info(f"Test accuracy: {test_metrics['accuracy']:.4f}")
+        
+        # Create and save training history plots
+        import os
+        from datetime import datetime
+        import matplotlib.pyplot as plt
+        
+        # Create timestamp for unique filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create directory if it doesn't exist
+        save_dir = os.path.join("results", "graphs", "training_history")
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 1. Training vs Validation Loss
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses, label='Training Loss')
+        plt.plot(val_losses, label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training vs Validation Loss')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f"loss_history_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 2. Training vs Validation Accuracy
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_accs, label='Training Accuracy')
+        plt.plot(val_accs, label='Validation Accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.title('Training vs Validation Accuracy')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f"accuracy_history_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 3. Learning Rate History
+        plt.figure(figsize=(10, 6))
+        plt.plot(learning_rates)
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title('Learning Rate History')
+        plt.yscale('log')  # Use log scale for better visualization
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f"learning_rate_history_{timestamp}.png"))
+        plt.show()
+        plt.close()
         
         # Return training metrics
         return {

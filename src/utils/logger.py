@@ -430,8 +430,13 @@ class MetricTracker:
         self.batches += 1
         
         # Update accuracy
-        _, preds = torch.max(outputs, 1)
-        self.correct += (preds == targets).sum().item()
+        if outputs.shape[1] == 1:  # Binary classification
+            probs = torch.sigmoid(outputs)
+            preds = (probs >= 0.5).float()
+            self.correct += (preds == targets).sum().item()
+        else:  # Multi-class classification
+            _, preds = torch.max(outputs, 1)
+            self.correct += (preds == targets).sum().item()
         self.total += targets.size(0)
     
     def get_metrics(self):

@@ -399,6 +399,55 @@ class BinaryTrainer:
         # Log metrics
         self.logger.log_metrics(0, metrics, split=split)
         
+        # Create and save visualizations
+        import os
+        from datetime import datetime
+        import matplotlib.pyplot as plt
+        
+        # Create timestamp for unique filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create directory if it doesn't exist
+        save_dir = os.path.join("results", "graphs", split)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 1. Confusion Matrix
+        from src.utils.visualization import confusion_matrix_to_figure
+        fig_cm = confusion_matrix_to_figure(metrics['confusion_matrix'], self.class_names)
+        plt.figure(fig_cm.number)
+        plt.savefig(os.path.join(save_dir, f"confusion_matrix_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 2. Model Predictions
+        fig_pred = visualize_model_predictions(
+            model=self.model,
+            dataloader=data_loader,
+            class_names=self.class_names,
+            device=self.device
+        )
+        plt.figure(fig_pred.number)
+        plt.savefig(os.path.join(save_dir, f"predictions_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 3. ROC Curve (for binary classification)
+        if 'roc_auc' in metrics:
+            from sklearn.metrics import roc_curve
+            fpr, tpr, _ = roc_curve(metrics['y_true'], metrics['y_pred'])
+            plt.figure(figsize=(8, 6))
+            plt.plot(fpr, tpr, label=f'ROC curve (AUC = {metrics["roc_auc"]:.3f})')
+            plt.plot([0, 1], [0, 1], 'k--')
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('Receiver Operating Characteristic (ROC) Curve')
+            plt.legend(loc="lower right")
+            plt.savefig(os.path.join(save_dir, f"roc_curve_{timestamp}.png"))
+            plt.show()
+            plt.close()
+        
         return metrics
     
     def train(self):
@@ -410,6 +459,13 @@ class BinaryTrainer:
         """
         # Get number of epochs
         num_epochs = self.config['training']['num_epochs']
+        
+        # Initialize lists to store metrics
+        train_losses = []
+        val_losses = []
+        train_accs = []
+        val_accs = []
+        learning_rates = []
         
         # Training loop
         for epoch in range(num_epochs):
@@ -431,6 +487,13 @@ class BinaryTrainer:
             
             # Get current learning rate
             current_lr = self.optimizer.param_groups[0]['lr']
+            
+            # Store metrics
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            train_accs.append(train_acc)
+            val_accs.append(val_acc)
+            learning_rates.append(current_lr)
             
             # Log epoch end
             self.logger.end_epoch(
@@ -468,6 +531,56 @@ class BinaryTrainer:
         self.logger.info("Evaluating model on test set...")
         test_metrics = self.evaluate(split='test')
         self.logger.info(f"Test accuracy: {test_metrics['accuracy']:.4f}")
+        
+        # Create and save training history plots
+        import os
+        from datetime import datetime
+        import matplotlib.pyplot as plt
+        
+        # Create timestamp for unique filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create directory if it doesn't exist
+        save_dir = os.path.join("results", "graphs", "training_history")
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 1. Training vs Validation Loss
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses, label='Training Loss')
+        plt.plot(val_losses, label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training vs Validation Loss')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f"loss_history_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 2. Training vs Validation Accuracy
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_accs, label='Training Accuracy')
+        plt.plot(val_accs, label='Validation Accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.title('Training vs Validation Accuracy')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f"accuracy_history_{timestamp}.png"))
+        plt.show()
+        plt.close()
+        
+        # 3. Learning Rate History
+        plt.figure(figsize=(10, 6))
+        plt.plot(learning_rates)
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title('Learning Rate History')
+        plt.yscale('log')  # Use log scale for better visualization
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f"learning_rate_history_{timestamp}.png"))
+        plt.show()
+        plt.close()
         
         # Return training metrics
         return {
