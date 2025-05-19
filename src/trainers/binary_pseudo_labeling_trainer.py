@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 """
 Trainer for binary semi-supervised learning with pseudo-labeling.
+
+This trainer implements a two-stage approach for each batch:
+1. First train on labeled data
+2. Then use the model to predict labels for unlabeled data
+3. If predictions have high confidence, use them as additional training signals
 """
 
 import torch
@@ -9,7 +14,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from typing import Dict
+from typing import Dict, Optional, Tuple, Iterator
 
 from src.trainers.binary_trainer import BinaryTrainer
 from src.utils.logger import MetricTracker
@@ -49,9 +54,10 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
         self.warmup_epochs = config['training']['pseudo_labeling']['warmup_epochs']
         self.alpha = config['training']['pseudo_labeling']['alpha']
         
-        # Get unlabeled data loader if it exists
+        # Initialize unlabeled data loader
         self.unlabeled_loader = dataloaders.get('unlabeled')
         self.has_unlabeled_data = self.unlabeled_loader is not None
+        self.unlabeled_iter = None
         
         # Get fast mode setting
         self.fast_mode = config.get('training', {}).get('fast_mode', False)
@@ -71,36 +77,59 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             strategy = self.config['training']['strategy']
             self.model.apply_strategy(strategy, epoch=0)
     
-    def get_pseudo_label_weight(self, epoch):
+    def get_pseudo_label_weight(self, epoch: int) -> float:
         """
         Calculate the weight applied to the pseudo-labeled loss term during training.
-        This implements a linear ramp-up schedule for the pseudo-label weight.
-        
-        During the ramp-up period (first rampup_epochs), the weight increases linearly 
-        from 0 to alpha. After ramp-up, it stays constant at alpha. If there is no 
-        unlabeled data, the weight is always 0.
         
         Args:
             epoch (int): Current training epoch.
             
         Returns:
-            float: Weight for pseudo-labeled loss:
-                  - 0.0 if no unlabeled data exists
-                  - Linear ramp from 0 to alpha during first rampup_epochs 
-                  - Constant alpha after rampup_epochs
+            float: Weight for pseudo-labeled loss.
         """
+        # During warmup period, don't use pseudo-labels at all
+        if epoch < self.warmup_epochs:
+            return 0.0
+            
         # If no unlabeled data available, pseudo-label loss weight is 0
         if not self.has_unlabeled_data:
             return 0.0
             
-        # During ramp-up period, linearly increase weight from 0 to alpha
-        if epoch < self.rampup_epochs:
-            return self.alpha * (epoch / self.rampup_epochs)
+        # During ramp-up period after warmup, linearly increase weight from 0 to alpha
+        if epoch < self.warmup_epochs + self.rampup_epochs:
+            return self.alpha * ((epoch - self.warmup_epochs) / self.rampup_epochs)
             
         # After ramp-up, use constant alpha weight
         return self.alpha
     
-    def generate_pseudo_labels(self, unlabeled_data):
+    def get_next_unlabeled_batch(self) -> Optional[torch.Tensor]:
+        """
+        Get the next batch of unlabeled data, handling iterator reset if needed.
+        
+        Returns:
+            torch.Tensor or None: Unlabeled data batch, or None if no unlabeled data available.
+        """
+        if not self.has_unlabeled_data:
+            return None
+            
+        if self.unlabeled_iter is None:
+            self.unlabeled_iter = iter(self.unlabeled_loader)
+            
+        try:
+            unlabeled_data, _ = next(self.unlabeled_iter)
+            return unlabeled_data.to(self.device)
+        except StopIteration:
+            # Reset iterator and try again
+            self.unlabeled_iter = iter(self.unlabeled_loader)
+            try:
+                unlabeled_data, _ = next(self.unlabeled_iter)
+                return unlabeled_data.to(self.device)
+            except StopIteration:
+                # This should not happen unless unlabeled dataset is empty
+                self.logger.detailed("Warning: Empty unlabeled dataset detected")
+                return None
+    
+    def generate_pseudo_labels(self, unlabeled_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate pseudo-labels for unlabeled data.
         
@@ -110,93 +139,125 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
         Returns:
             tuple: (pseudo_labels, mask) where mask indicates which samples to use.
         """
-        self.model.eval()
+        self.model.eval()  # Set model to evaluation mode for prediction
         with torch.no_grad():
             outputs = self.model(unlabeled_data)
             probs = torch.sigmoid(outputs)
+            
+            # Generate binary labels (0 or 1) based on probability threshold
             pseudo_labels = (probs >= 0.5).float()
             
             # Create mask for confident predictions
-            confidence = torch.abs(probs - 0.5) * 2  # Scale to [0, 1]
+            # Scale to [0, 1] range where 1.0 is highest confidence
+            confidence = torch.abs(probs - 0.5) * 2  
             mask = confidence >= self.confidence_threshold
-            
             
         self.model.train()  # Set back to training mode
         return pseudo_labels, mask
     
     def train_epoch(self, epoch: int) -> Dict[str, float]:
-        """Train for one epoch."""
+        """
+        Train the model for one epoch using both labeled and unlabeled data.
+        
+        Args:
+            epoch (int): Current epoch number.
+            
+        Returns:
+            Dict[str, float]: Dictionary of training metrics.
+        """
         self.model.train()
         metrics = MetricTracker()
         
+        # Get the weight for pseudo-labeled loss for current epoch
+        pseudo_label_weight = self.get_pseudo_label_weight(epoch)
+        
         # Reset unlabeled data iterator at start of epoch
-        if self.unlabeled_loader is not None:
+        if self.has_unlabeled_data:
             self.unlabeled_iter = iter(self.unlabeled_loader)
         
-        # Pre-allocate tensors for pseudo-labeling metrics if unlabeled data is available
-        if self.unlabeled_loader is not None:
-            total_samples = len(self.unlabeled_loader.dataset)
-            num_confident = 0
+        # Track the number of confident pseudo-labels
+        total_unlabeled_samples = 0
+        total_confident_samples = 0
         
-        for batch_idx, (data, target) in enumerate(self.train_loader):
-            # Move data to device
-            data, target = data.to(self.device), target.to(self.device)
-            
-            # Add channel dimension to target for binary cross entropy
-            target = target.float().unsqueeze(1)
+        for batch_idx, (labeled_data, labels) in enumerate(self.train_loader):
+            # Move labeled data to device
+            labeled_data = labeled_data.to(self.device)
+            labels = labels.to(self.device).float().unsqueeze(1)  # Add channel dimension
             
             # Zero gradients efficiently
             self.optimizer.zero_grad(set_to_none=True)
             
-            # Forward pass for labeled data
-            output = self.model(data)
-            loss = self.criterion(output, target)
-            self.logger.detailed(f"Batch {batch_idx}: Labeled loss: {loss.item():.6f}")
-            # Handle unlabeled data if available
-            if self.unlabeled_loader is not None:
-                try:
-                    unlabeled_data, _ = next(self.unlabeled_iter)
-                except StopIteration:
-                    self.unlabeled_iter = iter(self.unlabeled_iter)
-                    unlabeled_data, _ = next(self.unlabeled_iter)
-                
-                unlabeled_data = unlabeled_data.to(self.device)
-                
-                # Forward pass for unlabeled data
-                with torch.no_grad():
-                    unlabeled_output = self.model(unlabeled_data)
-                    pseudo_labels, mask = self.generate_pseudo_labels(unlabeled_data)
-                
-                # Update pseudo-labeling metrics
-                num_confident += mask.sum().item()
-                
-                # Compute loss for pseudo-labeled data
-                if mask.any():
-                    pseudo_loss = self.criterion(unlabeled_output, pseudo_labels)
-                    loss = loss + self.alpha * pseudo_loss
-                    
-                    self.logger.detailed(f"Batch {batch_idx}: Pseudo-labeling stats - "
-                                      f"Confident samples: {mask.sum().item()}/{len(mask)} "
-                                      f"(Confidence threshold: {self.confidence_threshold})")
+            # Step 1: Forward pass for labeled data
+            labeled_outputs = self.model(labeled_data)
+            labeled_loss = self.criterion(labeled_outputs, labels)
             
-            # Backward pass
-            loss.backward()
+            # Log labeled loss
+            self.logger.detailed(f"Batch {batch_idx}: Labeled loss: {labeled_loss.item():.6f}")
+            
+            # Initialize combined loss to labeled loss
+            total_loss = labeled_loss
+            
+            # Step 2: Process unlabeled data if available and we're using pseudo-labels
+            if self.has_unlabeled_data and pseudo_label_weight > 0:
+                unlabeled_data = self.get_next_unlabeled_batch()
+                
+                if unlabeled_data is not None:
+                    # Generate pseudo-labels
+                    pseudo_labels, confidence_mask = self.generate_pseudo_labels(unlabeled_data)
+                    
+                    # Update statistics
+                    batch_confident = confidence_mask.sum().item()
+                    total_confident_samples += batch_confident
+                    total_unlabeled_samples += len(unlabeled_data)
+                    
+                    # Log pseudo-labeling stats
+                    self.logger.detailed(
+                        f"Batch {batch_idx}: Pseudo-labeling stats - "
+                        f"Confident samples: {batch_confident}/{len(unlabeled_data)} "
+                        f"(Confidence threshold: {self.confidence_threshold})"
+                    )
+                    
+                    # Compute loss for confident pseudo-labeled samples
+                    if confidence_mask.any():
+                        # Forward pass for unlabeled data (now using train mode)
+                        unlabeled_outputs = self.model(unlabeled_data)
+                        
+                        # Apply confidence mask to both outputs and pseudo-labels
+                        masked_outputs = unlabeled_outputs[confidence_mask]
+                        masked_pseudo_labels = pseudo_labels[confidence_mask]
+                        
+                        # Compute loss for confident pseudo-labeled data
+                        if masked_outputs.numel() > 0:  # Check there are confident samples
+                            pseudo_loss = self.criterion(masked_outputs, masked_pseudo_labels)
+                            # Add weighted pseudo-loss to total loss
+                            total_loss = labeled_loss + pseudo_label_weight * pseudo_loss
+            
+            # Step 3: Backward pass and optimization
+            total_loss.backward()
             self.optimizer.step()
             
             # Update metrics
-            metrics.update(loss.item(), output, target)
+            metrics.update(total_loss.item(), labeled_outputs, labels)
             
             # Log batch progress
             if batch_idx % self.log_interval == 0:
-                self.logger.detailed(f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(self.train_loader.dataset)} "
-                                  f"({100. * batch_idx / len(self.train_loader):.0f}%)]\t"
-                                  f"Loss: {loss.item():.6f}")
+                self.logger.detailed(
+                    f"Train Epoch: {epoch} [{batch_idx * len(labeled_data)}/{len(self.train_loader.dataset)} "
+                    f"({100. * batch_idx / len(self.train_loader):.0f}%)]\t"
+                    f"Loss: {total_loss.item():.6f}"
+                )
         
         # Log pseudo-labeling statistics for the epoch
-        if self.unlabeled_loader is not None:
+        if self.has_unlabeled_data:
+            confidence_percentage = 0
+            if total_unlabeled_samples > 0:
+                confidence_percentage = 100.0 * total_confident_samples / total_unlabeled_samples
+                
             self.logger.detailed(f"Epoch {epoch} Pseudo-labeling Summary:")
-            self.logger.detailed(f"Found {num_confident}/{total_samples} confident predictions "
-                              f"({100. * num_confident / total_samples:.2f}%)")
+            self.logger.detailed(
+                f"Found {total_confident_samples}/{total_unlabeled_samples} confident predictions "
+                f"({confidence_percentage:.2f}%)"
+            )
         
         return metrics.get_metrics()
 
@@ -335,4 +396,4 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             for metric_name, metric_value in final_metrics.items():
                 self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
         
-        return final_metrics 
+        return final_metrics

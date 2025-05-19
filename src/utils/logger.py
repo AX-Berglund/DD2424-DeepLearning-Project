@@ -152,6 +152,13 @@ class Logger:
                     f"({100. * batch_idx / n_batches:.0f}%)] - "
                     f"Loss: {loss:.6f}, Acc: {acc:.6f}"
                 )
+                # Log to wandb
+                if self.wandb is not None:
+                    self.wandb.log({
+                        "batch/loss": loss,
+                        "batch/accuracy": acc,
+                        "batch/progress": batch_idx / n_batches
+                    }, step=epoch * n_batches + batch_idx)
     
     def log_metrics(self, epoch, metrics, split="train"):
         """Log detailed metrics."""
@@ -162,6 +169,9 @@ class Logger:
         for metric_name, metric_value in metrics.items():
             if isinstance(metric_value, (int, float)):
                 self.detailed(f"  {metric_name}: {metric_value:.4f}")
+                # Log to wandb
+                if self.wandb is not None:
+                    self.wandb.log({f"{split}/{metric_name}": metric_value}, step=epoch)
             elif isinstance(metric_value, np.ndarray):
                 self.detailed(f"  {metric_name}:\n{metric_value}")
             elif isinstance(metric_value, dict):
@@ -169,6 +179,9 @@ class Logger:
                 for k, v in metric_value.items():
                     if isinstance(v, (int, float)):
                         self.detailed(f"    {k}: {v:.4f}")
+                        # Log to wandb
+                        if self.wandb is not None:
+                            self.wandb.log({f"{split}/{metric_name}/{k}": v}, step=epoch)
                     else:
                         self.detailed(f"    {k}: {v}")
     
@@ -184,6 +197,16 @@ class Logger:
             f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, "
             f"LR: {lr:.6f}"
         )
+        
+        # Log to wandb
+        if self.wandb is not None:
+            self.wandb.log({
+                "train/loss": train_loss,
+                "train/accuracy": train_acc,
+                "val/loss": val_loss,
+                "val/accuracy": val_acc,
+                "learning_rate": lr
+            }, step=epoch)
     
     def save_model(self, model, optimizer, epoch, val_loss, val_acc, is_best=False):
         """Save model checkpoint."""

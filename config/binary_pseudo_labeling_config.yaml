@@ -52,15 +52,25 @@ logging:
   experiment_name: "binary_pseudo_labeling"
   log_dir: "logs"
   tensorboard: true
-  wandb: false
+  wandb: true
+  wandb_project: "binary-pseudo-labeling"
+  wandb_entity: axelberglund98  # Set this to your wandb username if you want to specify it
   log_interval: 20
   checkpoint_dir: "checkpoints"  # Added checkpoint directory configuration
   save_dir: 'checkpoints/binary_pseudo_labeling'
-  save_interval: 5
+  save_interval: 5 # Save checkpoint every 5 epochs
   log_level: 'detailed'  # Options: 'debug', 'detailed', 'info', 'warning', 'error'
   metrics:
     - accuracy
     - f1_score
     - precision
-    - recall 
+    - recall
+    - confusion_matrix
+    - pseudo_label_confidence
+    - pseudo_label_ratio
+    - labeled_data_ratio
+    - unlabeled_data_ratio
+    - learning_rate
+    - batch_time
+    - epoch_time
 
