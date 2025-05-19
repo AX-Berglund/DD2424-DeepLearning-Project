@@ -114,9 +114,10 @@ class BinaryTrainer:
         
         # Initialize early stopping
         self.early_stopping = EarlyStopping(
-            patience=config['training']['early_stopping_patience'],
-            min_delta=0.0,
-            verbose=True
+            patience=config['training']['early_stopping']['patience'],
+            min_delta=config['training']['early_stopping']['min_delta'],
+            verbose=True,
+            mode='min' if config['training']['early_stopping']['monitor'] == 'val_loss' else 'max'
         )
         
         # Initialize best model state
@@ -416,8 +417,7 @@ class BinaryTrainer:
         fig_cm = confusion_matrix_to_figure(metrics['confusion_matrix'], self.class_names)
         plt.figure(fig_cm.number)
         plt.savefig(os.path.join(save_dir, f"confusion_matrix_{timestamp}.png"))
-        plt.show()
-        plt.close()
+        plt.close(fig_cm)
         
         # 2. Model Predictions
         fig_pred = visualize_model_predictions(
@@ -428,8 +428,7 @@ class BinaryTrainer:
         )
         plt.figure(fig_pred.number)
         plt.savefig(os.path.join(save_dir, f"predictions_{timestamp}.png"))
-        plt.show()
-        plt.close()
+        plt.close(fig_pred)
         
         # 3. ROC Curve (for binary classification)
         if 'roc_auc' in metrics:
@@ -445,7 +444,6 @@ class BinaryTrainer:
             plt.title('Receiver Operating Characteristic (ROC) Curve')
             plt.legend(loc="lower right")
             plt.savefig(os.path.join(save_dir, f"roc_curve_{timestamp}.png"))
-            plt.show()
             plt.close()
         
         return metrics
@@ -457,136 +455,140 @@ class BinaryTrainer:
         Returns:
             dict: Dictionary of training and validation metrics.
         """
-        # Get number of epochs
-        num_epochs = self.config['training']['num_epochs']
-        
-        # Initialize lists to store metrics
-        train_losses = []
-        val_losses = []
-        train_accs = []
-        val_accs = []
-        learning_rates = []
-        
-        # Training loop
-        for epoch in range(num_epochs):
-            # Log epoch start
-            self.logger.start_epoch(epoch)
+        try:
+            # Get number of epochs
+            num_epochs = self.config['training']['num_epochs']
             
-            # Train for one epoch
-            train_loss, train_acc = self.train_epoch(epoch)
+            # Initialize lists to store metrics
+            train_losses = []
+            val_losses = []
+            train_accs = []
+            val_accs = []
+            learning_rates = []
             
-            # Validate for one epoch
-            val_loss, val_acc = self.validate_epoch(epoch)
+            # Training loop
+            for epoch in range(num_epochs):
+                # Log epoch start
+                self.logger.start_epoch(epoch)
+                
+                # Train for one epoch
+                train_loss, train_acc = self.train_epoch(epoch)
+                
+                # Validate for one epoch
+                val_loss, val_acc = self.validate_epoch(epoch)
+                
+                # Update learning rate scheduler
+                if self.scheduler is not None:
+                    if isinstance(self.scheduler, ReduceLROnPlateau):
+                        self.scheduler.step(val_loss)
+                    else:
+                        self.scheduler.step()
+                
+                # Get current learning rate
+                current_lr = self.optimizer.param_groups[0]['lr']
+                
+                # Store metrics
+                train_losses.append(train_loss)
+                val_losses.append(val_loss)
+                train_accs.append(train_acc)
+                val_accs.append(val_acc)
+                learning_rates.append(current_lr)
+                
+                # Log epoch end
+                self.logger.end_epoch(
+                    epoch=epoch,
+                    train_loss=train_loss,
+                    train_acc=train_acc,
+                    val_loss=val_loss,
+                    val_acc=val_acc,
+                    lr=current_lr
+                )
+                
+                # Check if this is the best model
+                is_best = val_loss < self.best_val_loss
+                if is_best:
+                    self.best_val_loss = val_loss
+                    self.best_model_state = self.model.state_dict()
+                
+                # Save model checkpoint
+                self.logger.save_model(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    epoch=epoch,
+                    val_loss=val_loss,
+                    val_acc=val_acc,
+                    is_best=is_best
+                )
+                
+                # Early stopping
+                self.early_stopping(val_loss)
+                if self.early_stopping.early_stop:
+                    self.logger.info(f"Early stopping triggered after epoch {epoch}")
+                    break
             
-            # Update learning rate scheduler
-            if self.scheduler is not None:
-                if isinstance(self.scheduler, ReduceLROnPlateau):
-                    self.scheduler.step(val_loss)
-                else:
-                    self.scheduler.step()
+            # Final evaluation on test set
+            self.logger.info("Evaluating model on test set...")
+            test_metrics = self.evaluate(split='test')
+            self.logger.info(f"Test accuracy: {test_metrics['accuracy']:.4f}")
             
-            # Get current learning rate
-            current_lr = self.optimizer.param_groups[0]['lr']
+            # Create and save training history plots
+            import os
+            from datetime import datetime
+            import matplotlib.pyplot as plt
             
-            # Store metrics
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            train_accs.append(train_acc)
-            val_accs.append(val_acc)
-            learning_rates.append(current_lr)
+            # Create timestamp for unique filenames
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Log epoch end
-            self.logger.end_epoch(
-                epoch=epoch,
-                train_loss=train_loss,
-                train_acc=train_acc,
-                val_loss=val_loss,
-                val_acc=val_acc,
-                lr=current_lr
-            )
+            # Create directory if it doesn't exist
+            save_dir = os.path.join("results", "graphs", "training_history")
+            os.makedirs(save_dir, exist_ok=True)
             
-            # Check if this is the best model
-            is_best = val_loss < self.best_val_loss
-            if is_best:
-                self.best_val_loss = val_loss
-                self.best_model_state = self.model.state_dict()
+            # 1. Training vs Validation Loss
+            plt.figure(figsize=(10, 6))
+            plt.plot(train_losses, label='Training Loss')
+            plt.plot(val_losses, label='Validation Loss')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.title('Training vs Validation Loss')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(os.path.join(save_dir, f"loss_history_{timestamp}.png"))
+            plt.close()
             
-            # Save model checkpoint
-            self.logger.save_model(
-                model=self.model,
-                optimizer=self.optimizer,
-                epoch=epoch,
-                val_loss=val_loss,
-                val_acc=val_acc,
-                is_best=is_best
-            )
+            # 2. Training vs Validation Accuracy
+            plt.figure(figsize=(10, 6))
+            plt.plot(train_accs, label='Training Accuracy')
+            plt.plot(val_accs, label='Validation Accuracy')
+            plt.xlabel('Epoch')
+            plt.ylabel('Accuracy')
+            plt.title('Training vs Validation Accuracy')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(os.path.join(save_dir, f"accuracy_history_{timestamp}.png"))
+            plt.close()
             
-            # Early stopping
-            self.early_stopping(val_loss)
-            if self.early_stopping.early_stop:
-                self.logger.info(f"Early stopping triggered after epoch {epoch}")
-                break
-        
-        # Final evaluation on test set
-        self.logger.info("Evaluating model on test set...")
-        test_metrics = self.evaluate(split='test')
-        self.logger.info(f"Test accuracy: {test_metrics['accuracy']:.4f}")
-        
-        # Create and save training history plots
-        import os
-        from datetime import datetime
-        import matplotlib.pyplot as plt
-        
-        # Create timestamp for unique filenames
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create directory if it doesn't exist
-        save_dir = os.path.join("results", "graphs", "training_history")
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # 1. Training vs Validation Loss
-        plt.figure(figsize=(10, 6))
-        plt.plot(train_losses, label='Training Loss')
-        plt.plot(val_losses, label='Validation Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Training vs Validation Loss')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(os.path.join(save_dir, f"loss_history_{timestamp}.png"))
-        plt.show()
-        plt.close()
-        
-        # 2. Training vs Validation Accuracy
-        plt.figure(figsize=(10, 6))
-        plt.plot(train_accs, label='Training Accuracy')
-        plt.plot(val_accs, label='Validation Accuracy')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy')
-        plt.title('Training vs Validation Accuracy')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(os.path.join(save_dir, f"accuracy_history_{timestamp}.png"))
-        plt.show()
-        plt.close()
-        
-        # 3. Learning Rate History
-        plt.figure(figsize=(10, 6))
-        plt.plot(learning_rates)
-        plt.xlabel('Epoch')
-        plt.ylabel('Learning Rate')
-        plt.title('Learning Rate History')
-        plt.yscale('log')  # Use log scale for better visualization
-        plt.grid(True)
-        plt.savefig(os.path.join(save_dir, f"learning_rate_history_{timestamp}.png"))
-        plt.show()
-        plt.close()
-        
-        # Return training metrics
-        return {
-            'train_loss': train_loss,
-            'train_acc': train_acc,
-            'val_loss': val_loss,
-            'val_acc': val_acc,
-            'test_acc': test_metrics['accuracy']
-        }
+            # 3. Learning Rate History
+            plt.figure(figsize=(10, 6))
+            plt.plot(learning_rates)
+            plt.xlabel('Epoch')
+            plt.ylabel('Learning Rate')
+            plt.title('Learning Rate History')
+            plt.yscale('log')  # Use log scale for better visualization
+            plt.grid(True)
+            plt.savefig(os.path.join(save_dir, f"learning_rate_history_{timestamp}.png"))
+            plt.close()
+            
+            # Return training metrics
+            return {
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
+                'val_acc': val_acc,
+                'test_acc': test_metrics['accuracy']
+            }
+            
+        finally:
+            # Ensure all resources are cleaned up
+            import matplotlib.pyplot as plt
+            plt.close('all')  # Close all matplotlib figures
+            torch.cuda.empty_cache()  # Clear GPU memory if using CUDA

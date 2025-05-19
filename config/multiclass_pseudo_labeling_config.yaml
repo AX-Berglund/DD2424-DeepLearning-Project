@@ -1,8 +1,9 @@
 data:
   task: 'semisupervised'
   task_type: 'multiclass'
-  batch_size: 32
-  num_workers: 4
+  batch_size: 32  # Reduced from 64 to better fit M3 memory
+  num_workers: 4  # Reduced from 8 to avoid overwhelming the system
+  pin_memory: true
   image_size: 224
   data_dir: 'data/processed/semisupervised/multiclass'
   percentage_labeled: 50  # Can be 100, 50, 10, or 1
@@ -11,63 +12,47 @@ data:
     use_augmentation: true
 
 model:
-  architecture: 'resnet50'
+  architecture: 'resnet18'
   pretrained: true
-  num_classes: 37  # 37 breeds (12 cats + 25 dogs)
+  num_classes: 10  # CIFAR-10 has 10 classes
   dropout_rate: 0.5
 
 training:
-  device: 'cpu'  # Using CPU since CUDA is not available
-  strategy: "gradual_unfreeze"  # Changed from multi_layer to gradual_unfreeze
-  unfreeze_layers: 1
-  
-  # Gradual unfreezing settings
-  gradual_unfreeze:
-    initial_layers: 1
-    unfreeze_every: 5  # Unfreeze every 5 epochs
-  
-  # Multiple learning rates for different layer groups
-  layer_specific_lr:
-    enabled: true
-    base_lr: 0.0001    # Lower learning rate for pre-trained layers
-    new_layers_lr: 0.001
-  
-  # Optimization settings
-  optimizer: "adamw"
-  learning_rate: 0.0001  # Lower base learning rate
-  weight_decay: 0.01
-  momentum: 0.9
-  
-  # Training schedule
-  num_epochs: 50
+  device: 'mps'  # Changed from 'cuda' to 'mps' for M3
+  num_epochs: 12
   early_stopping_patience: 10
-  
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: 'adam'
+  scheduler: 'reduce_on_plateau'
+  strategy: 'full'  # Options: 'full', 'last_layer', 'masked'
+  unfreeze_layers: 1
+  mixed_precision: false  # Disabled mixed precision as it's not supported on MPS
+  fast_mode: false  # Enable this for faster training without detailed metrics during training
+
   # Learning rate scheduler
-  scheduler:
-    name: "cosine"
-    T_max: 50
-    eta_min: 0.00001
-  
-  # Batch normalization updates
-  update_batch_norm: true
-  
-  # Pseudo-labeling settings
+  lr_scheduler:
+    use_scheduler: true
+    type: "reduce_on_plateau"          # Options: step, cosine, reduce_on_plateau
+    step_size: 5          # For StepLR
+    gamma: 0.1            # Factor to reduce LR
+
   pseudo_labeling:
-    confidence_threshold: 0.7  # Lower threshold for more pseudo-labels
-    max_unlabeled_batches: 100
-    update_frequency: 1
+    confidence_threshold: 0.8
+    rampup_epochs: 10
     warmup_epochs: 5
-    rampup_epochs: 10  # Longer rampup period
-    alpha: 0.5  # Lower weight for pseudo-labeled loss
+    alpha: 0.5  # Weight for pseudo-labeled loss
 
 logging:
-  experiment_name: multiclass_pseudo_labeling
-  log_dir: 'logs/multiclass_pseudo_labeling'
-  save_dir: 'checkpoints/multiclass_pseudo_labeling'
-  checkpoint_dir: 'checkpoints/multiclass_pseudo_labeling'  # Directory for saving model checkpoints
-  log_interval: 10
-  save_interval: 5
+  experiment_name: "multiclass_pseudo_labeling"
+  log_dir: "logs"
   tensorboard: true
+  wandb: false
+  log_interval: 20
+  checkpoint_dir: "checkpoints"  # Added checkpoint directory configuration
+  save_dir: 'checkpoints/multiclass_pseudo_labeling'
+  save_interval: 5
+  log_level: 'detailed'  # Options: 'debug', 'detailed', 'info', 'warning', 'error'
   metrics:
     - accuracy
     - f1_score

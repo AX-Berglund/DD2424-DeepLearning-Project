@@ -1,8 +1,8 @@
 data:
   task: 'semisupervised'
   task_type: 'binary'
-  batch_size: 64
-  num_workers: 8
+  batch_size: 32
+  num_workers: 4
   pin_memory: true
   image_size: 224
   data_dir: 'data/processed/semisupervised/binary'
@@ -18,16 +18,22 @@ model:
   dropout_rate: 0.5
 
 training:
-  device: 'cuda'
-  num_epochs: 12
-  early_stopping_patience: 10
+  device: 'mps'
+  num_epochs: 15
   learning_rate: 0.001
   weight_decay: 0.0001
   optimizer: 'adam'
   scheduler: 'reduce_on_plateau'
   strategy: 'full'  # Options: 'full', 'last_layer', 'masked'
   unfreeze_layers: 1
-  mixed_precision: true
+  mixed_precision: false
+  fast_mode: false
+
+  # Early stopping configuration
+  early_stopping:
+    patience: 10
+    min_delta: 0.0001
+    monitor: 'val_loss'
 
   # Learning rate scheduler
   lr_scheduler:
@@ -51,6 +57,7 @@ logging:
   checkpoint_dir: "checkpoints"  # Added checkpoint directory configuration
   save_dir: 'checkpoints/binary_pseudo_labeling'
   save_interval: 5
+  log_level: 'detailed'  # Options: 'debug', 'detailed', 'info', 'warning', 'error'
   metrics:
     - accuracy
     - f1_score

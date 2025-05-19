@@ -26,6 +26,8 @@ def parse_args():
     parser.add_argument('--percentage', type=int, default=50,
                       choices=[100, 50, 10, 1],
                       help='Percentage of labeled data to use (only for pseudo-labeling)')
+    parser.add_argument('--fast', action='store_true',
+                      help='Enable fast training mode (skip detailed metrics during training)')
     return parser.parse_args()
 
 
@@ -40,6 +42,11 @@ def main():
     # Update percentage in config if using pseudo-labeling
     if args.pseudo_labeling:
         config['data']['percentage_labeled'] = args.percentage
+    
+    # Update fast mode in config
+    if args.fast:
+        config['training']['fast_mode'] = True
+        print("Running in fast mode - detailed metrics will only be calculated at the end of training")
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -68,9 +75,6 @@ def main():
     
     # Train model
     metrics = trainer.train()
-    
-    # Log final metrics
-    logger.info(f"Training completed. Final metrics: {metrics}")
     
     # Clean up logger resources
     logger.finish()

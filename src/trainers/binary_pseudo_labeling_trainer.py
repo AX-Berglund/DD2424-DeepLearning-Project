@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from typing import Dict
 
 from src.trainers.binary_trainer import BinaryTrainer
 from src.utils.logger import MetricTracker
@@ -30,14 +31,30 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
         """
         super().__init__(model, dataloaders, config, logger)
         
+        # Get data loaders
+        self.train_loader = dataloaders['train']
+        self.val_loader = dataloaders['val']
+        self.test_loader = dataloaders['test']
+        
+        # Get training settings
+        self.batch_size = config['data']['batch_size']
+        self.num_epochs = config['training']['num_epochs']
+        self.learning_rate = config['training']['learning_rate']
+        self.early_stopping_patience = config['training']['early_stopping']['patience']
+        self.log_interval = config['logging']['log_interval']
+        
         # Get pseudo-labeling settings
         self.confidence_threshold = config['training']['pseudo_labeling']['confidence_threshold']
         self.rampup_epochs = config['training']['pseudo_labeling']['rampup_epochs']
+        self.warmup_epochs = config['training']['pseudo_labeling']['warmup_epochs']
         self.alpha = config['training']['pseudo_labeling']['alpha']
         
         # Get unlabeled data loader if it exists
         self.unlabeled_loader = dataloaders.get('unlabeled')
         self.has_unlabeled_data = self.unlabeled_loader is not None
+        
+        # Get fast mode setting
+        self.fast_mode = config.get('training', {}).get('fast_mode', False)
         
         if not self.has_unlabeled_data:
             logger.info("No unlabeled data found. Running in supervised mode.")
@@ -103,388 +120,219 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             confidence = torch.abs(probs - 0.5) * 2  # Scale to [0, 1]
             mask = confidence >= self.confidence_threshold
             
-        # Log info about confident predictions
-        num_confident = mask.sum().item()
-        total_samples = mask.numel()
-        self.logger.info(
-            f"Found {num_confident}/{total_samples} confident predictions "
-            f"({(num_confident/total_samples)*100:.1f}%)"
-        )
             
         self.model.train()  # Set back to training mode
         return pseudo_labels, mask
     
-    def train_epoch(self, epoch):
-        """
-        Train for one epoch.
-        
-        Args:
-            epoch (int): Current epoch.
-            
-        Returns:
-            tuple: Tuple of (epoch_loss, epoch_accuracy).
-        """
-        # Set model to training mode
+    def train_epoch(self, epoch: int) -> Dict[str, float]:
+        """Train for one epoch."""
         self.model.train()
+        metrics = MetricTracker()
         
-        # Initialize metrics tracker
-        tracker = MetricTracker()
+        # Reset unlabeled data iterator at start of epoch
+        if self.unlabeled_loader is not None:
+            self.unlabeled_iter = iter(self.unlabeled_loader)
         
-        # Get data loaders
-        labeled_loader = self.dataloaders['train']
-        unlabeled_loader = self.dataloaders.get('unlabeled')
+        # Pre-allocate tensors for pseudo-labeling metrics if unlabeled data is available
+        if self.unlabeled_loader is not None:
+            total_samples = len(self.unlabeled_loader.dataset)
+            num_confident = 0
         
-        # Reset unlabeled data iterator at the start of each epoch
-        unlabeled_iter = None
-        if unlabeled_loader is not None and len(unlabeled_loader) > 0:
-            unlabeled_iter = iter(unlabeled_loader)
-        
-        # Pre-allocate tensors for pseudo-labeling metrics
-        if self.has_unlabeled_data:
-            self.pseudo_label_metrics['pseudo_label_count'] = []
-            self.pseudo_label_metrics['pseudo_label_confidence'] = []
-        
-        # Enable automatic mixed precision if configured
-        scaler = torch.cuda.amp.GradScaler() if self.config['training'].get('mixed_precision', False) else None
-        
-        # Training loop
-        for batch_idx, (labeled_data, labeled_targets) in enumerate(labeled_loader):
-            # Move data to device (do this once for the whole batch)
-            labeled_data = labeled_data.to(self.device, non_blocking=True)
-            labeled_targets = labeled_targets.to(self.device, non_blocking=True).float().unsqueeze(1)
+        for batch_idx, (data, target) in enumerate(self.train_loader):
+            # Move data to device
+            data, target = data.to(self.device), target.to(self.device)
             
-            # Zero gradients
-            self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+            # Add channel dimension to target for binary cross entropy
+            target = target.float().unsqueeze(1)
             
-            # Forward pass for labeled data with mixed precision
-            with torch.cuda.amp.autocast(enabled=scaler is not None):
-                labeled_outputs = self.model(labeled_data)
-                labeled_loss = F.binary_cross_entropy_with_logits(labeled_outputs, labeled_targets)
-                total_loss = labeled_loss
+            # Zero gradients efficiently
+            self.optimizer.zero_grad(set_to_none=True)
             
-            # If we have unlabeled data and past warmup, use pseudo-labeling
-            if unlabeled_iter is not None and epoch >= self.config['training']['pseudo_labeling']['warmup_epochs']:
+            # Forward pass for labeled data
+            output = self.model(data)
+            loss = self.criterion(output, target)
+            self.logger.detailed(f"Batch {batch_idx}: Labeled loss: {loss.item():.6f}")
+            # Handle unlabeled data if available
+            if self.unlabeled_loader is not None:
                 try:
-                    # Get next batch of unlabeled data
-                    unlabeled_data, _ = next(unlabeled_iter)
-                    unlabeled_data = unlabeled_data.to(self.device, non_blocking=True)
-                    
-                    # Get pseudo-labels with mixed precision
-                    with torch.cuda.amp.autocast(enabled=scaler is not None):
-                        unlabeled_outputs = self.model(unlabeled_data)
-                        pseudo_probs = torch.sigmoid(unlabeled_outputs)
-                        
-                        # Create confidence mask
-                        confidence = torch.abs(pseudo_probs - 0.5) * 2  # Scale to [0, 1]
-                        confidence_mask = confidence >= self.confidence_threshold
-                        
-                        if confidence_mask.any():
-                            # Get pseudo-labels for confident predictions
-                            pseudo_labels = (pseudo_probs > 0.5).float()
-                            
-                            # Compute loss for pseudo-labeled data
-                            pseudo_loss = F.binary_cross_entropy_with_logits(
-                                unlabeled_outputs[confidence_mask],
-                                pseudo_labels[confidence_mask]
-                            )
-                            
-                            # Get weight for pseudo-labeled loss
-                            alpha = self.get_pseudo_label_weight(epoch)
-                            
-                            # Combine losses
-                            total_loss = labeled_loss + alpha * pseudo_loss
-                            
-                            # Log pseudo-labeling metrics (do this on CPU to avoid GPU memory fragmentation)
-                            with torch.no_grad():
-                                self.pseudo_label_metrics['pseudo_label_count'].append(
-                                    confidence_mask.sum().item()
-                                )
-                                self.pseudo_label_metrics['pseudo_label_confidence'].append(
-                                    confidence[confidence_mask].mean().item()
-                                )
-                    
+                    unlabeled_data, _ = next(self.unlabeled_iter)
                 except StopIteration:
-                    # Reset iterator if we've exhausted it
-                    unlabeled_iter = iter(unlabeled_loader)
+                    self.unlabeled_iter = iter(self.unlabeled_iter)
+                    unlabeled_data, _ = next(self.unlabeled_iter)
+                
+                unlabeled_data = unlabeled_data.to(self.device)
+                
+                # Forward pass for unlabeled data
+                with torch.no_grad():
+                    unlabeled_output = self.model(unlabeled_data)
+                    pseudo_labels, mask = self.generate_pseudo_labels(unlabeled_data)
+                
+                # Update pseudo-labeling metrics
+                num_confident += mask.sum().item()
+                
+                # Compute loss for pseudo-labeled data
+                if mask.any():
+                    pseudo_loss = self.criterion(unlabeled_output, pseudo_labels)
+                    loss = loss + self.alpha * pseudo_loss
+                    
+                    self.logger.detailed(f"Batch {batch_idx}: Pseudo-labeling stats - "
+                                      f"Confident samples: {mask.sum().item()}/{len(mask)} "
+                                      f"(Confidence threshold: {self.confidence_threshold})")
             
-            # Backward pass with mixed precision
-            if scaler is not None:
-                scaler.scale(total_loss).backward()
-                scaler.step(self.optimizer)
-                scaler.update()
-            else:
-                total_loss.backward()
-                self.optimizer.step()
+            # Backward pass
+            loss.backward()
+            self.optimizer.step()
             
-            # Update metrics with total loss (do this on CPU)
-            with torch.no_grad():
-                tracker.update(total_loss.item(), labeled_outputs, labeled_targets)
+            # Update metrics
+            metrics.update(loss.item(), output, target)
             
-            # Log batch progress (only every N batches to reduce overhead)
-            if batch_idx % self.config['logging']['log_interval'] == 0:
-                self.logger.log_batch(
-                    epoch=epoch,
-                    batch_idx=batch_idx,
-                    n_batches=len(labeled_loader),
-                    loss=total_loss.item(),
-                    acc=compute_accuracy(labeled_outputs, labeled_targets, binary=True)
-                )
+            # Log batch progress
+            if batch_idx % self.log_interval == 0:
+                self.logger.detailed(f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(self.train_loader.dataset)} "
+                                  f"({100. * batch_idx / len(self.train_loader):.0f}%)]\t"
+                                  f"Loss: {loss.item():.6f}")
         
-        # Get epoch metrics
-        metrics = tracker.get_metrics()
+        # Log pseudo-labeling statistics for the epoch
+        if self.unlabeled_loader is not None:
+            self.logger.detailed(f"Epoch {epoch} Pseudo-labeling Summary:")
+            self.logger.detailed(f"Found {num_confident}/{total_samples} confident predictions "
+                              f"({100. * num_confident / total_samples:.2f}%)")
         
-        # Add pseudo-labeling metrics if we have them
-        if self.pseudo_label_metrics['pseudo_label_count']:
-            metrics.update({
-                'pseudo_label_count': np.mean(self.pseudo_label_metrics['pseudo_label_count']),
-                'pseudo_label_confidence': np.mean(self.pseudo_label_metrics['pseudo_label_confidence'])
-            })
-        
-        return metrics['loss'], metrics['accuracy']
+        return metrics.get_metrics()
 
-    def validate_epoch(self, epoch):
-        """
-        Validate for one epoch.
-        
-        Args:
-            epoch (int): Current epoch.
-            
-        Returns:
-            tuple: Tuple of (epoch_loss, epoch_accuracy).
-        """
-        # Set model to evaluation mode
+    def validate_epoch(self, epoch: int) -> Dict[str, float]:
+        """Validate for one epoch."""
         self.model.eval()
+        metrics = MetricTracker()
         
-        # Initialize metrics tracker
-        tracker = MetricTracker()
-        
-        # Get data loader
-        val_loader = self.dataloaders['val']
-        
-        # Pre-allocate lists for outputs and targets
-        all_outputs = []
-        all_targets = []
-        
-        # Validation loop
-        with torch.no_grad(), torch.amp.autocast(device_type=self.device.type):  # Use automatic mixed precision
-            for data, target in val_loader:
-                # Move data to device (do this once for the whole batch)
-                data = data.to(self.device, non_blocking=True)
-                target = target.to(self.device, non_blocking=True).float().unsqueeze(1)
-                
-                # Forward pass
+        with torch.no_grad():
+            for batch_idx, (data, target) in enumerate(self.val_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                target = target.float().unsqueeze(1)
                 output = self.model(data)
+                loss = self.criterion(output, target)
                 
-                # Compute loss
-                loss = F.binary_cross_entropy_with_logits(output, target)
+                metrics.update(loss.item(), output, target)
                 
-                # Update metrics
-                tracker.update(loss.item(), output, target)
-                
-                # Collect outputs and targets for detailed metrics
+                if batch_idx % self.log_interval == 0:
+                    self.logger.detailed(f"Validation Epoch: {epoch} "
+                                      f"[{batch_idx * len(data)}/{len(self.val_loader.dataset)} "
+                                      f"({100. * batch_idx / len(self.val_loader):.0f}%)]\t"
+                                      f"Loss: {loss.item():.6f}")
+        
+        # Skip detailed metrics in fast mode
+        if not self.fast_mode:
+            # Compute additional metrics
+            all_outputs = []
+            all_targets = []
+            
+            for data, target in self.val_loader:
+                data, target = data.to(self.device), target.to(self.device)
+                target = target.float().unsqueeze(1)
+                output = self.model(data)
                 all_outputs.append(output)
                 all_targets.append(target)
+            
+            all_outputs = torch.cat(all_outputs)
+            all_targets = torch.cat(all_targets)
+            
+            # Compute and log detailed metrics
+            detailed_metrics = compute_metrics(all_outputs, all_targets)
+            for metric_name, metric_value in detailed_metrics.items():
+                metrics.update(metric_name, metric_value)
+                self.logger.detailed(f"Validation {metric_name}: {metric_value:.4f}")
         
-        # Concatenate all outputs and targets
-        all_outputs = torch.cat(all_outputs, dim=0)
-        all_targets = torch.cat(all_targets, dim=0)
-        
-        # Convert to float32 before computing metrics
-        all_outputs = all_outputs.float()
-        all_targets = all_targets.float()
-        
-        # Get epoch metrics
-        metrics = tracker.get_metrics()
-        
-        # Log detailed metrics
-        detailed_metrics = compute_metrics(
-            outputs=all_outputs,
-            targets=all_targets,
-            class_names=self.class_names,
-            binary=True
-        )
-        
-        self.logger.log_metrics(epoch, detailed_metrics, split="val")
-        
-        return metrics['loss'], metrics['accuracy']
+        return metrics.get_metrics()
 
-    def train(self):
-        """
-        Train the model for the specified number of epochs.
+    def train(self) -> Dict[str, float]:
+        """Train the model."""
+        best_val_loss = float('inf')
+        best_val_acc = 0.0
+        patience = self.config['training']['early_stopping']['patience']
+        patience_counter = 0
         
-        Returns:
-            dict: Dictionary of training and validation metrics.
-        """
-        # Get number of epochs
-        num_epochs = self.config['training']['num_epochs']
+        self.logger.detailed("Starting training...")
+        self.logger.detailed(f"Training configuration:")
+        self.logger.detailed(f"- Device: {self.device}")
+        self.logger.detailed(f"- Batch size: {self.batch_size}")
+        self.logger.detailed(f"- Learning rate: {self.learning_rate}")
+        self.logger.detailed(f"- Number of epochs: {self.num_epochs}")
+        self.logger.detailed(f"- Early stopping patience: {self.early_stopping_patience}")
         
-        # Initialize lists to store metrics
-        train_losses = []
-        val_losses = []
-        train_accs = []
-        val_accs = []
-        learning_rates = []
-        pseudo_label_counts = []
-        pseudo_label_confidences = []
+        if self.unlabeled_loader is not None:
+            self.logger.detailed(f"Pseudo-labeling configuration:")
+            self.logger.detailed(f"- Confidence threshold: {self.confidence_threshold}")
+            self.logger.detailed(f"- Alpha (pseudo-label weight): {self.alpha}")
+            self.logger.detailed(f"- Warmup epochs: {self.warmup_epochs}")
+            self.logger.detailed(f"- Rampup epochs: {self.rampup_epochs}")
         
-        # Training loop
-        for epoch in range(num_epochs):
-            # Log epoch start
-            self.logger.start_epoch(epoch)
+        final_metrics = None
+        for epoch in range(self.num_epochs):
+            self.logger.detailed(f"\nEpoch {epoch + 1}/{self.num_epochs}")
             
             # Train for one epoch
-            train_loss, train_acc = self.train_epoch(epoch)
+            train_metrics = self.train_epoch(epoch)
+            self.logger.detailed(f"Training metrics:")
+            for metric_name, metric_value in train_metrics.items():
+                self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
             
-            # Validate for one epoch
-            val_loss, val_acc = self.validate_epoch(epoch)
+            # Validate
+            val_metrics = self.validate_epoch(epoch)
+            self.logger.detailed(f"Validation metrics:")
+            for metric_name, metric_value in val_metrics.items():
+                self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
             
-            # Update learning rate scheduler
+            # Update learning rate
             if self.scheduler is not None:
-                if isinstance(self.scheduler, ReduceLROnPlateau):
-                    self.scheduler.step(val_loss)
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step(val_metrics['loss'])
                 else:
                     self.scheduler.step()
+                current_lr = self.optimizer.param_groups[0]['lr']
+                self.logger.detailed(f"Learning rate: {current_lr:.6f}")
             
-            # Get current learning rate
-            current_lr = self.optimizer.param_groups[0]['lr']
-            
-            # Store metrics
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            train_accs.append(train_acc)
-            val_accs.append(val_acc)
-            learning_rates.append(current_lr)
-            
-            # Store pseudo-labeling metrics if available
-            if self.pseudo_label_metrics['pseudo_label_count']:
-                pseudo_label_counts.append(np.mean(self.pseudo_label_metrics['pseudo_label_count']))
-                pseudo_label_confidences.append(np.mean(self.pseudo_label_metrics['pseudo_label_confidence']))
-            
-            # Log epoch end
-            self.logger.end_epoch(
-                epoch=epoch,
-                train_loss=train_loss,
-                train_acc=train_acc,
-                val_loss=val_loss,
-                val_acc=val_acc,
-                lr=current_lr
+            # Log metrics
+            self.logger.info(
+                f"Epoch {epoch}: "
+                f"Train Loss: {train_metrics['loss']:.4f}, "
+                f"Train Acc: {train_metrics['accuracy']:.4f}, "
+                f"Val Loss: {val_metrics['loss']:.4f}, "
+                f"Val Acc: {val_metrics['accuracy']:.4f}"
             )
             
-            # Log pseudo-label metrics if available
-            if self.pseudo_label_metrics['pseudo_label_count']:
-                avg_count = np.mean(self.pseudo_label_metrics['pseudo_label_count'])
-                avg_confidence = np.mean(self.pseudo_label_metrics['pseudo_label_confidence'])
-                self.logger.info(
-                    f"Pseudo-label metrics - Count: {avg_count:.1f}, "
-                    f"Confidence: {avg_confidence:.4f}"
-                )
-            
-            # Check if this is the best model
-            is_best = val_loss < self.best_val_loss
+            # Save checkpoint
+            is_best = val_metrics['loss'] < best_val_loss
             if is_best:
-                self.best_val_loss = val_loss
-                self.best_model_state = self.model.state_dict()
+                best_val_loss = val_metrics['loss']
+                best_val_acc = val_metrics['accuracy']
+                patience_counter = 0
+                final_metrics = val_metrics
+            else:
+                patience_counter += 1
             
-            # Save model checkpoint
             self.logger.save_model(
-                model=self.model,
-                optimizer=self.optimizer,
-                epoch=epoch,
-                val_loss=val_loss,
-                val_acc=val_acc,
-                is_best=is_best
+                self.model,
+                self.optimizer,
+                epoch,
+                val_metrics['loss'],
+                val_metrics['accuracy'],
+                is_best
             )
             
             # Early stopping
-            self.early_stopping(val_loss)
-            if self.early_stopping.early_stop:
-                self.logger.info(f"Early stopping triggered after epoch {epoch}")
+            if patience_counter >= patience:
+                self.logger.info(f"Early stopping triggered after {epoch + 1} epochs")
                 break
         
-        # Final evaluation on test set
-        self.logger.info("Evaluating model on test set...")
-        test_metrics = self.evaluate(split='test')
-        self.logger.info(f"Test accuracy: {test_metrics['accuracy']:.4f}")
+        # Clean up logger resources
+        self.logger.finish()
         
-        # Create and save training history plots
-        import os
-        from datetime import datetime
-        import matplotlib.pyplot as plt
+        self.logger.detailed("Training completed!")
+        if not self.fast_mode:
+            self.logger.detailed("Computing final evaluation metrics...")
+            final_metrics = self.validate_epoch(self.num_epochs)
+            self.logger.detailed("Final evaluation metrics:")
+            for metric_name, metric_value in final_metrics.items():
+                self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
         
-        # Create timestamp for unique filenames
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create directory if it doesn't exist
-        save_dir = os.path.join("results", "graphs", "training_history")
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # 1. Training vs Validation Loss
-        plt.figure(figsize=(10, 6))
-        plt.plot(train_losses, label='Training Loss')
-        plt.plot(val_losses, label='Validation Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Training vs Validation Loss')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(os.path.join(save_dir, f"loss_history_{timestamp}.png"))
-        plt.show()
-        plt.close()
-        
-        # 2. Training vs Validation Accuracy
-        plt.figure(figsize=(10, 6))
-        plt.plot(train_accs, label='Training Accuracy')
-        plt.plot(val_accs, label='Validation Accuracy')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy')
-        plt.title('Training vs Validation Accuracy')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(os.path.join(save_dir, f"accuracy_history_{timestamp}.png"))
-        plt.show()
-        plt.close()
-        
-        # 3. Learning Rate History
-        plt.figure(figsize=(10, 6))
-        plt.plot(learning_rates)
-        plt.xlabel('Epoch')
-        plt.ylabel('Learning Rate')
-        plt.title('Learning Rate History')
-        plt.yscale('log')  # Use log scale for better visualization
-        plt.grid(True)
-        plt.savefig(os.path.join(save_dir, f"learning_rate_history_{timestamp}.png"))
-        plt.show()
-        plt.close()
-        
-        # 4. Pseudo-labeling Metrics (if available)
-        if pseudo_label_counts:
-            # Create figure with two subplots
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-            
-            # Plot pseudo-label count
-            ax1.plot(pseudo_label_counts, 'b-')
-            ax1.set_xlabel('Epoch')
-            ax1.set_ylabel('Number of Pseudo-labels')
-            ax1.set_title('Number of Pseudo-labels per Epoch')
-            ax1.grid(True)
-            
-            # Plot pseudo-label confidence
-            ax2.plot(pseudo_label_confidences, 'r-')
-            ax2.set_xlabel('Epoch')
-            ax2.set_ylabel('Average Confidence')
-            ax2.set_title('Average Pseudo-label Confidence per Epoch')
-            ax2.grid(True)
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(save_dir, f"pseudo_labeling_metrics_{timestamp}.png"))
-            plt.show()
-            plt.close()
-        
-        # Return training metrics
-        return {
-            'train_loss': train_loss,
-            'train_acc': train_acc,
-            'val_loss': val_loss,
-            'val_acc': val_acc,
-            'test_acc': test_metrics['accuracy']
-        } 
+        return final_metrics 

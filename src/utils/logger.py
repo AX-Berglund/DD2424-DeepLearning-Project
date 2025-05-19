@@ -12,6 +12,9 @@ import time
 import torch
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
+import wandb
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Filter out PyTorch DataLoader warnings
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
@@ -28,377 +31,252 @@ logging.getLogger('torch.utils.data.dataloader').setLevel(logging.ERROR)
 
 
 class Logger:
-    """Logger class for tracking experiments."""
+    """Logger class for training and evaluation metrics."""
     
-    def __init__(self, config, log_dir="logs"):
+    def __init__(self, config):
         """
-        Initialize the logger.
+        Initialize logger.
         
         Args:
-            config (dict): Experiment configuration.
-            log_dir (str): Base directory for logs.
+            config (dict): Configuration dictionary.
         """
         self.config = config
+        self.log_dir = config['logging']['log_dir']
+        self.experiment_name = config['logging']['experiment_name']
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_level = config['logging'].get('log_level', 'info')  # Default to 'info'
         
-        # Create experiment name with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        exp_name = f"{config['logging']['experiment_name']}_{timestamp}"
+        # Create log directory
+        os.makedirs(self.log_dir, exist_ok=True)
         
-        # Setup directories
-        self.log_dir = Path(config['logging']['log_dir'])
-        self.exp_dir = self.log_dir / "run_logs" / exp_name
-        self.tensorboard_dir = self.log_dir / "tensorboard" / exp_name
+        # Set up file logging
+        self.log_file = os.path.join(self.log_dir, f"{self.experiment_name}_{self.timestamp}.log")
+        self.setup_file_logging()
         
-        # Create directories
-        self.exp_dir.mkdir(parents=True, exist_ok=True)
-        self.tensorboard_dir.mkdir(parents=True, exist_ok=True)
+        # Set up TensorBoard
+        if config['logging']['tensorboard']:
+            self.tensorboard_dir = os.path.join(self.log_dir, 'tensorboard', f"{self.experiment_name}_{self.timestamp}")
+            self.writer = SummaryWriter(self.tensorboard_dir)
+        else:
+            self.writer = None
         
-        # Setup file logger
-        self.file_logger = self._setup_file_logger()
+        # Set up Weights & Biases
+        self.wandb = None
+        if config['logging'].get('wandb', False):
+            self.wandb = wandb.init(
+                project=config['logging'].get('wandb_project', 'deep-learning'),
+                config=config
+            )
         
-        # Setup TensorBoard if enabled
-        self.tb_writer = None
-        if config['logging'].get('tensorboard', False):
-            self.tb_writer = SummaryWriter(log_dir=self.tensorboard_dir)
-        
-        # Setup WandB if enabled
-        self.wandb_enabled = config['logging'].get('wandb', False)
-        if self.wandb_enabled:
-            self._setup_wandb()
-        
-        # Save config
-        with open(self.exp_dir / "config.json", "w") as f:
-            json.dump(config, f, indent=4)
-        
-        # Training metrics
-        self.metrics = {
-            "train": {"loss": [], "acc": []},
-            "val": {"loss": [], "acc": []}
-        }
-        
-        # Timing info
-        self.start_time = time.time()
-        self.epoch_start_time = None
-        
-        # Log start
-        self.info(f"Starting experiment: {exp_name}")
-        self.info(f"Config: {json.dumps(config, indent=2)}")
+        # Log experiment start
+        self.info(f"Starting experiment: {self.experiment_name}_{self.timestamp}")
+        self.info(f"Config: {config}")
     
-    def _setup_file_logger(self):
-        """Setup file logger."""
-        logger = logging.getLogger(f"exp_{self.exp_dir.name}")
-        logger.setLevel(logging.INFO)
-        
-        # Check if logger already has handlers
-        if logger.handlers:
-            return logger
+    def setup_file_logging(self):
+        """Set up file logging with appropriate format and level."""
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s [%(levelname)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
         
         # Create file handler
-        file_handler = logging.FileHandler(self.exp_dir / "experiment.log")
-        file_handler.setLevel(logging.INFO)
-        
-        # Create formatter
-        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+        file_handler = logging.FileHandler(self.log_file)
         file_handler.setFormatter(formatter)
         
-        # Add handlers
-        logger.addHandler(file_handler)
+        # Create console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
         
-        return logger
+        # Set up logger
+        self.logger = logging.getLogger('training')
+        self.logger.setLevel(logging.DEBUG)  # Capture all levels
+        
+        # Disable propagation to root logger to prevent duplicate messages
+        self.logger.propagate = False
+        
+        # Remove any existing handlers
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+        
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
     
-    def _setup_wandb(self):
-        """Setup Weights & Biases logging."""
-        try:
-            import wandb
-            wandb.init(
-                project="transfer_learning_project",
-                name=self.exp_dir.name,
-                config=self.config
-            )
-            self.info("WandB logging enabled")
-        except ImportError:
-            self.warning("WandB not installed. WandB logging disabled.")
-            self.wandb_enabled = False
+    def _should_log(self, level):
+        """Check if the given level should be logged based on current log_level."""
+        levels = {
+            'debug': 0,
+            'detailed': 1,
+            'info': 2,
+            'warning': 3,
+            'error': 4
+        }
+        return levels.get(level, 0) >= levels.get(self.log_level, 0)
+    
+    def debug(self, message):
+        """Log debug message."""
+        if self._should_log('debug'):
+            self.logger.debug(message)
+    
+    def detailed(self, message):
+        """Log detailed message."""
+        if self._should_log('detailed'):
+            self.logger.info(f"[DETAILED] {message}")
     
     def info(self, message):
         """Log info message."""
-        # Only log to root logger if no handlers exist
-        if not logging.getLogger().handlers:
-            logging.info(message)
-        self.file_logger.info(message)
+        if self._should_log('info'):
+            self.logger.info(message)
     
     def warning(self, message):
         """Log warning message."""
-        # Only log to root logger if no handlers exist
-        if not logging.getLogger().handlers:
-            logging.warning(message)
-        self.file_logger.warning(message)
+        if self._should_log('warning'):
+            self.logger.warning(message)
     
     def error(self, message):
         """Log error message."""
-        # Only log to root logger if no handlers exist
-        if not logging.getLogger().handlers:
-            logging.error(message)
-        self.file_logger.error(message)
-    
-    def start_epoch(self, epoch):
-        """Mark the start of an epoch."""
-        self.epoch_start_time = time.time()
-        self.info(f"Starting epoch {epoch}")
-    
-    def end_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc, lr=None):
-        """
-        Mark the end of an epoch and log metrics.
-        
-        Args:
-            epoch (int): Current epoch.
-            train_loss (float): Training loss.
-            train_acc (float): Training accuracy.
-            val_loss (float): Validation loss.
-            val_acc (float): Validation accuracy.
-            lr (float, optional): Current learning rate.
-        """
-        # Calculate epoch time
-        epoch_time = time.time() - self.epoch_start_time
-        total_time = time.time() - self.start_time
-        
-        # Store metrics
-        self.metrics["train"]["loss"].append(train_loss)
-        self.metrics["train"]["acc"].append(train_acc)
-        self.metrics["val"]["loss"].append(val_loss)
-        self.metrics["val"]["acc"].append(val_acc)
-        
-        # Log metrics
-        self.info(
-            f"Epoch {epoch} completed in {epoch_time:.2f}s (Total: {total_time:.2f}s) - "
-            f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-            f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}" +
-            (f", LR: {lr:.6f}" if lr is not None else "")
-        )
-        
-        # Log to TensorBoard
-        if self.tb_writer:
-            self.tb_writer.add_scalar("Loss/train", train_loss, epoch)
-            self.tb_writer.add_scalar("Accuracy/train", train_acc, epoch)
-            self.tb_writer.add_scalar("Loss/val", val_loss, epoch)
-            self.tb_writer.add_scalar("Accuracy/val", val_acc, epoch)
-            if lr is not None:
-                self.tb_writer.add_scalar("LearningRate", lr, epoch)
-        
-        # Log to WandB
-        if self.wandb_enabled:
-            try:
-                import wandb
-                wandb.log({
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                    "epoch_time": epoch_time,
-                    "lr": lr
-                })
-            except ImportError:
-                pass
+        if self._should_log('error'):
+            self.logger.error(message)
     
     def log_batch(self, epoch, batch_idx, n_batches, loss, acc):
-        """
-        Log batch metrics during training.
-        
-        Args:
-            epoch (int): Current epoch.
-            batch_idx (int): Current batch index.
-            n_batches (int): Total number of batches.
-            loss (float): Batch loss.
-            acc (float): Batch accuracy.
-        """
-        if batch_idx % self.config['logging']['log_interval'] == 0:
-            self.info(
-                f"Epoch {epoch} [{batch_idx}/{n_batches} "
-                f"({100. * batch_idx / n_batches:.0f}%)] - "
-                f"Loss: {loss:.6f}, Acc: {acc:.4f}"
+        """Log batch metrics."""
+        if self._should_log('detailed'):
+            self.detailed(
+                f"Batch {batch_idx}/{n_batches} - "
+                f"Loss: {loss:.6f}, Acc: {acc:.6f}"
             )
+        elif self._should_log('info'):
+            if batch_idx % self.config['logging']['log_interval'] == 0:
+                self.info(
+                    f"Epoch {epoch} [{batch_idx}/{n_batches} "
+                    f"({100. * batch_idx / n_batches:.0f}%)] - "
+                    f"Loss: {loss:.6f}, Acc: {acc:.6f}"
+                )
     
-    def log_metrics(self, epoch, metrics_dict, split="val"):
-        """
-        Log detailed metrics.
-        
-        Args:
-            epoch (int): Current epoch.
-            metrics_dict (dict): Dictionary of metrics.
-            split (str): Data split ('train', 'val', or 'test').
-        """
-        # Log to console and file
-        self.info(f"{split.capitalize()} metrics for epoch {epoch}:")
-        for metric_name, metric_value in metrics_dict.items():
+    def log_metrics(self, epoch, metrics, split="train"):
+        """Log detailed metrics."""
+        if not self._should_log('detailed'):
+            return
+            
+        self.detailed(f"\n{split.capitalize()} metrics for epoch {epoch}:")
+        for metric_name, metric_value in metrics.items():
             if isinstance(metric_value, (int, float)):
-                self.info(f"  {metric_name}: {metric_value:.4f}")
-            else:
-                self.info(f"  {metric_name}: {metric_value}")
-        
-        # Log to TensorBoard
-        if self.tb_writer:
-            for metric_name, metric_value in metrics_dict.items():
-                if isinstance(metric_value, (int, float)):
-                    self.tb_writer.add_scalar(f"{metric_name}/{split}", metric_value, epoch)
-        
-        # Log to WandB
-        if self.wandb_enabled:
-            try:
-                import wandb
-                
-                # Create a dictionary with prefixed keys
-                prefixed_metrics = {f"{split}_{k}": v for k, v in metrics_dict.items()
-                                 if isinstance(v, (int, float))}
-                prefixed_metrics["epoch"] = epoch
-                
-                wandb.log(prefixed_metrics)
-                
-                # Log confusion matrix if available
-                if "confusion_matrix" in metrics_dict:
-                    try:
-                        wandb.log({
-                            f"{split}_confusion_matrix": wandb.plot.confusion_matrix(
-                                probs=None,
-                                y_true=metrics_dict.get("y_true", []),
-                                preds=metrics_dict.get("y_pred", []),
-                                class_names=metrics_dict.get("class_names", [])
-                            )
-                        })
-                    except Exception as e:
-                        self.warning(f"Failed to log confusion matrix to WandB: {e}")
-            except ImportError:
-                pass
+                self.detailed(f"  {metric_name}: {metric_value:.4f}")
+            elif isinstance(metric_value, np.ndarray):
+                self.detailed(f"  {metric_name}:\n{metric_value}")
+            elif isinstance(metric_value, dict):
+                self.detailed(f"  {metric_name}:")
+                for k, v in metric_value.items():
+                    if isinstance(v, (int, float)):
+                        self.detailed(f"    {k}: {v:.4f}")
+                    else:
+                        self.detailed(f"    {k}: {v}")
     
-    def log_model_summary(self, model):
-        """
-        Log model summary.
-        
-        Args:
-            model (nn.Module): Model to summarize.
-        """
-        # Count trainable parameters
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in model.parameters())
-        
-        # Log model summary
-        self.info(f"Model: {model.__class__.__name__}")
-        self.info(f"Trainable parameters: {trainable_params:,} / {total_params:,} "
-                f"({100. * trainable_params / total_params:.2f}%)")
-        
-        # Log which layers are being fine-tuned
-        self.info("Trainable layers:")
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.info(f"  {name}: {param.numel():,} parameters")
+    def start_epoch(self, epoch):
+        """Log epoch start."""
+        self.info(f"Starting epoch {epoch}")
     
-    def log_image(self, tag, img_tensor, global_step=0, dataformats='CHW'):
-        """
-        Log an image to TensorBoard.
-        
-        Args:
-            tag (str): Image tag.
-            img_tensor (torch.Tensor): Image tensor.
-            global_step (int): Global step.
-            dataformats (str): Format of the input tensor ('CHW', 'HWC', etc.)
-        """
-        if self.tb_writer:
-            self.tb_writer.add_image(
-                tag=tag,
-                img_tensor=img_tensor,
-                global_step=int(global_step),
-                dataformats=dataformats,
-                walltime=None  # Explicitly set walltime to None to use current time
-            )
-    
-    def log_histogram(self, tag, values, global_step=0, bins='auto'):
-        """
-        Log a histogram to TensorBoard.
-        
-        Args:
-            tag (str): Histogram tag.
-            values (torch.Tensor): Values to plot.
-            global_step (int): Global step.
-            bins (str or int): Number of bins or method.
-        """
-        if self.tb_writer:
-            self.tb_writer.add_histogram(tag, values, global_step, bins=bins)
+    def end_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc, lr):
+        """Log epoch end."""
+        self.info(
+            f"Epoch {epoch} completed - "
+            f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+            f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, "
+            f"LR: {lr:.6f}"
+        )
     
     def save_model(self, model, optimizer, epoch, val_loss, val_acc, is_best=False):
-        """
-        Save model checkpoint.
+        """Save model checkpoint."""
+        if not self._should_log('detailed'):
+            return
+            
+        self.detailed(f"Saving model checkpoint for epoch {epoch}")
+        self.detailed(f"  Validation Loss: {val_loss:.4f}")
+        self.detailed(f"  Validation Accuracy: {val_acc:.4f}")
+        self.detailed(f"  Is Best Model: {is_best}")
         
-        Args:
-            model (nn.Module): Model to save.
-            optimizer (torch.optim.Optimizer): Optimizer to save.
-            epoch (int): Current epoch.
-            val_loss (float): Validation loss.
-            val_acc (float): Validation accuracy.
-            is_best (bool): Whether this is the best model so far.
-        """
-        checkpoint_dir = Path(self.config['logging']['checkpoint_dir'])
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create checkpoint
+        # Save checkpoint
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'val_loss': val_loss,
-            'val_acc': val_acc,
-            'config': self.config
+            'val_acc': val_acc
         }
         
-        # Save latest checkpoint
-        torch.save(checkpoint, checkpoint_dir / 'latest_model.pt')
+        # Create checkpoint directory
+        checkpoint_dir = self.config['logging']['checkpoint_dir']
+        os.makedirs(checkpoint_dir, exist_ok=True)
         
-        # Save epoch checkpoint (every 5 epochs)
-        if epoch % 5 == 0:
-            torch.save(checkpoint, checkpoint_dir / f'model_epoch_{epoch}.pt')
+        # Save checkpoint
+        checkpoint_path = os.path.join(
+            checkpoint_dir,
+            f"{self.experiment_name}_epoch_{epoch}.pt"
+        )
+        torch.save(checkpoint, checkpoint_path)
+        self.detailed(f"  Checkpoint saved to: {checkpoint_path}")
         
         # Save best model
         if is_best:
-            torch.save(checkpoint, checkpoint_dir / 'best_model.pt')
-            self.info(f"New best model saved (val_acc: {val_acc:.4f})")
+            best_model_path = os.path.join(
+                checkpoint_dir,
+                f"{self.experiment_name}_best.pt"
+            )
+            torch.save(checkpoint, best_model_path)
+            self.detailed(f"  Best model saved to: {best_model_path}")
     
     def finish(self):
-        """Finish logging and clean up."""
-        # Calculate total time
-        total_time = time.time() - self.start_time
-        hours, remainder = divmod(total_time, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        # Log completion
-        self.info(
-            f"Experiment completed in "
-            f"{int(hours)}h {int(minutes)}m {seconds:.2f}s"
-        )
+        """Clean up logger resources."""
+        # Close and remove all handlers
+        for handler in self.logger.handlers[:]:
+            handler.close()
+            self.logger.removeHandler(handler)
         
         # Close TensorBoard writer
-        if self.tb_writer:
-            self.tb_writer.flush()  # Ensure all data is written
-            self.tb_writer.close()
-            self.tb_writer = None  # Clear the reference
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
         
-        # Close WandB
-        if self.wandb_enabled:
-            try:
-                import wandb
-                wandb.finish()
-            except ImportError:
-                pass
+        # Close Weights & Biases
+        if self.wandb is not None:
+            self.wandb.finish()
+            self.wandb = None
         
-        # Save final metrics
-        with open(self.exp_dir / "metrics.json", "w") as f:
-            json.dump(self.metrics, f, indent=4)
+        # Close any open matplotlib figures
+        plt.close('all')
         
-        # Close file logger
-        for handler in self.file_logger.handlers[:]:
-            handler.close()
-            self.file_logger.removeHandler(handler)
+        # Shutdown the logging system
+        logging.shutdown()
+    
+    def log_model_summary(self, model):
+        """Log model architecture and parameters."""
+        if not self._should_log('detailed'):
+            return
+            
+        self.detailed("\nModel Summary:")
+        self.detailed(f"Architecture: {model.__class__.__name__}")
         
-        # Remove logger from logging manager
-        logging.getLogger().removeHandler(self.file_logger)
+        # Count parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        self.detailed(f"Total parameters: {total_params:,}")
+        self.detailed(f"Trainable parameters: {trainable_params:,}")
+        self.detailed(f"Non-trainable parameters: {total_params - trainable_params:,}")
+        
+        # Log layer information
+        self.detailed("\nLayer Information:")
+        for name, module in model.named_children():
+            self.detailed(f"\n{name}:")
+            self.detailed(f"  Type: {module.__class__.__name__}")
+            if hasattr(module, 'out_features'):
+                self.detailed(f"  Output features: {module.out_features}")
+            if hasattr(module, 'kernel_size'):
+                self.detailed(f"  Kernel size: {module.kernel_size}")
+            if hasattr(module, 'stride'):
+                self.detailed(f"  Stride: {module.stride}")
+            if hasattr(module, 'padding'):
+                self.detailed(f"  Padding: {module.padding}")
 
 
 class MetricTracker:
