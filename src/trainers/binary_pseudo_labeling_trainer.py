@@ -249,15 +249,21 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
         
         # Log pseudo-labeling statistics for the epoch
         if self.has_unlabeled_data:
-            confidence_percentage = 0
+            confidence_percentage = 0.0
             if total_unlabeled_samples > 0:
                 confidence_percentage = 100.0 * total_confident_samples / total_unlabeled_samples
                 
             self.logger.detailed(f"Epoch {epoch} Pseudo-labeling Summary:")
-            self.logger.detailed(
-                f"Found {total_confident_samples}/{total_unlabeled_samples} confident predictions "
-                f"({confidence_percentage:.2f}%)"
-            )
+            self.logger.detailed(f"Found {total_confident_samples}/{total_unlabeled_samples} confident predictions "
+                              f"({confidence_percentage:.2f}%)")
+            
+            # Log to wandb
+            if self.logger.wandb is not None:
+                self.logger.wandb.log({
+                    "pseudo_labeling/confident_samples": total_confident_samples,
+                    "pseudo_labeling/total_samples": total_unlabeled_samples,
+                    "pseudo_labeling/confidence_ratio": total_confident_samples / total_unlabeled_samples if total_unlabeled_samples > 0 else 0
+                }, step=epoch)
         
         return metrics.get_metrics()
 
@@ -300,8 +306,20 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             # Compute and log detailed metrics
             detailed_metrics = compute_metrics(all_outputs, all_targets)
             for metric_name, metric_value in detailed_metrics.items():
-                metrics.update(metric_name, metric_value)
-                self.logger.detailed(f"Validation {metric_name}: {metric_value:.4f}")
+                # Skip accuracy as it's already calculated in the main validation loop
+                if metric_name != 'accuracy':
+                    metrics.update_metric(metric_name, metric_value)
+                if isinstance(metric_value, np.ndarray):
+                    self.logger.detailed(f"Validation {metric_name}:\n{metric_value}")
+                else:
+                    self.logger.detailed(f"Validation {metric_name}: {metric_value:.4f}")
+        
+        # Log to wandb
+        if self.logger.wandb is not None:
+            self.logger.wandb.log({
+                "val/loss": metrics.get_metrics()['loss'],
+                "val/accuracy": metrics.get_metrics()['accuracy']
+            }, step=epoch)
         
         return metrics.get_metrics()
 
@@ -335,13 +353,26 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             train_metrics = self.train_epoch(epoch)
             self.logger.detailed(f"Training metrics:")
             for metric_name, metric_value in train_metrics.items():
-                self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
+                if isinstance(metric_value, np.ndarray):
+                    self.logger.detailed(f"- {metric_name}:\n{metric_value}")
+                else:
+                    self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
+            
+            # Log training metrics to wandb
+            if self.logger.wandb is not None:
+                self.logger.wandb.log({
+                    "train/loss": train_metrics['loss'],
+                    "train/accuracy": train_metrics['accuracy']
+                }, step=epoch)
             
             # Validate
             val_metrics = self.validate_epoch(epoch)
             self.logger.detailed(f"Validation metrics:")
             for metric_name, metric_value in val_metrics.items():
-                self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
+                if isinstance(metric_value, np.ndarray):
+                    self.logger.detailed(f"- {metric_name}:\n{metric_value}")
+                else:
+                    self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
             
             # Update learning rate
             if self.scheduler is not None:
@@ -360,6 +391,28 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
                 f"Val Loss: {val_metrics['loss']:.4f}, "
                 f"Val Acc: {val_metrics['accuracy']:.4f}"
             )
+
+            # In your train method, replace multiple wandb.log calls with a single one at end of each epoch:
+            if self.logger.wandb is not None:
+                wandb_log_dict = {
+                    "train/loss": train_metrics['loss'],
+                    "train/accuracy": train_metrics['accuracy'],
+                    "val/loss": val_metrics['loss'],
+                    "val/accuracy": val_metrics['accuracy'],
+                    "learning_rate": self.optimizer.param_groups[0]['lr'],
+                    "epoch": epoch,
+                    "_step": epoch
+                }
+                
+                # Add pseudo-labeling metrics if available
+                if hasattr(self, 'total_confident_samples') and hasattr(self, 'total_unlabeled_samples'):
+                    wandb_log_dict.update({
+                        "pseudo_labeling/confident_samples": self.total_confident_samples,
+                        "pseudo_labeling/total_samples": self.total_unlabeled_samples,
+                        "pseudo_labeling/confidence_ratio": self.total_confident_samples / self.total_unlabeled_samples if self.total_unlabeled_samples > 0 else 0,
+                    })
+                
+                self.logger.wandb.log(wandb_log_dict)
             
             # Save checkpoint
             is_best = val_metrics['loss'] < best_val_loss
@@ -385,15 +438,26 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
                 self.logger.info(f"Early stopping triggered after {epoch + 1} epochs")
                 break
         
+        # Evaluate on test set
+        self.logger.info("Evaluating model on test set...")
+        test_metrics = self.evaluate(split='test')
+        self.logger.info(f"Test metrics:")
+        for metric_name, metric_value in test_metrics.items():
+            if isinstance(metric_value, np.ndarray):
+                self.logger.info(f"- {metric_name}:\n{metric_value}")
+            else:
+                self.logger.info(f"- {metric_name}: {metric_value:.4f}")
+        
+        # Log test metrics to wandb at the current epoch step
+        if self.logger.wandb is not None:
+            wandb_log_dict = {}
+            for metric_name, metric_value in test_metrics.items():
+                if not isinstance(metric_value, np.ndarray):
+                    wandb_log_dict[f"test/{metric_name}"] = metric_value
+            # Add epoch step to ensure metrics are logged at the correct step
+            wandb_log_dict["epoch"] = epoch
+            self.logger.wandb.log(wandb_log_dict)
+        
         # Clean up logger resources
         self.logger.finish()
-        
-        self.logger.detailed("Training completed!")
-        if not self.fast_mode:
-            self.logger.detailed("Computing final evaluation metrics...")
-            final_metrics = self.validate_epoch(self.num_epochs)
-            self.logger.detailed("Final evaluation metrics:")
-            for metric_name, metric_value in final_metrics.items():
-                self.logger.detailed(f"- {metric_name}: {metric_value:.4f}")
-        
         return final_metrics

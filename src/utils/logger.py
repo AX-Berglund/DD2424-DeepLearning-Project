@@ -63,14 +63,52 @@ class Logger:
         # Set up Weights & Biases
         self.wandb = None
         if config['logging'].get('wandb', False):
-            self.wandb = wandb.init(
-                project=config['logging'].get('wandb_project', 'deep-learning'),
-                config=config
-            )
+            wandb_config = {
+                'project': config['logging'].get('wandb_project', 'deep-learning'),
+                'config': config,
+                'name': f"{self.experiment_name}_{self.timestamp}",
+                'entity': config['logging'].get('wandb_entity')
+            }
+            try:
+                self.wandb = wandb.init(**wandb_config)
+            except Exception as e:
+                self.warning(f"Failed to initialize wandb: {e}")
+                self.warning("Running without wandb logging.")
+                self.wandb = None
+            
+            # Log model architecture if available
+            if hasattr(config, 'model'):
+                self.wandb.config.update({
+                    'model_architecture': config['model'].get('architecture'),
+                    'num_classes': config['model'].get('num_classes'),
+                    'pretrained': config['model'].get('pretrained')
+                })
         
         # Log experiment start
         self.info(f"Starting experiment: {self.experiment_name}_{self.timestamp}")
         self.info(f"Config: {config}")
+
+        if self.wandb is not None:
+            # Define custom charts for wandb
+            self.wandb.define_metric("train/loss", summary="min")
+            self.wandb.define_metric("train/accuracy", summary="max")
+            self.wandb.define_metric("val/loss", summary="min")
+            self.wandb.define_metric("val/accuracy", summary="max")
+            self.wandb.define_metric("learning_rate")
+            
+            # Add metrics dependent on epoch
+            self.wandb.define_metric("epoch")
+            
+            # Make other metrics use epoch as x-axis
+            self.wandb.define_metric("train/*", step_metric="epoch")
+            self.wandb.define_metric("val/*", step_metric="epoch")
+            
+            # Add pseudo-labeling specific metrics if applicable
+            if config.get('training', {}).get('pseudo_labeling', {}):
+                self.wandb.define_metric("pseudo_labeling/confident_samples")
+                self.wandb.define_metric("pseudo_labeling/total_samples")
+                self.wandb.define_metric("pseudo_labeling/confidence_ratio")
+                self.wandb.define_metric("pseudo_labeling/*", step_metric="epoch")
     
     def setup_file_logging(self):
         """Set up file logging with appropriate format and level."""
@@ -118,10 +156,26 @@ class Logger:
         if self._should_log('debug'):
             self.logger.debug(message)
     
+
+
+            
     def detailed(self, message):
-        """Log detailed message."""
-        if self._should_log('detailed'):
-            self.logger.info(f"[DETAILED] {message}")
+        """
+        Log detailed message with filtering for large arrays.
+        """
+        if not self._should_log('detailed'):
+            return
+            
+        # Filter large arrays
+        if "[" in message and "]" in message and len(message) > 500:
+            # For arrays, show only the first few elements
+            if "array" in message.lower() or any(x in message for x in ["y_pred", "y_true", "confusion_matrix"]):
+                # Extract the array name
+                array_name = message.split(":")[0] if ":" in message else "Array"
+                self.logger.info(f"[DETAILED] {array_name}: [large array omitted]")
+                return
+                
+        self.logger.info(f"[DETAILED] {message}")
     
     def info(self, message):
         """Log info message."""
@@ -157,7 +211,8 @@ class Logger:
                     self.wandb.log({
                         "batch/loss": loss,
                         "batch/accuracy": acc,
-                        "batch/progress": batch_idx / n_batches
+                        "batch/progress": batch_idx / n_batches,
+                        "epoch": epoch
                     }, step=epoch * n_batches + batch_idx)
     
     def log_metrics(self, epoch, metrics, split="train"):
@@ -174,6 +229,9 @@ class Logger:
                     self.wandb.log({f"{split}/{metric_name}": metric_value}, step=epoch)
             elif isinstance(metric_value, np.ndarray):
                 self.detailed(f"  {metric_name}:\n{metric_value}")
+                # Log to wandb as a histogram
+                if self.wandb is not None:
+                    self.wandb.log({f"{split}/{metric_name}": wandb.Histogram(metric_value)}, step=epoch)
             elif isinstance(metric_value, dict):
                 self.detailed(f"  {metric_name}:")
                 for k, v in metric_value.items():
@@ -205,7 +263,8 @@ class Logger:
                 "train/accuracy": train_acc,
                 "val/loss": val_loss,
                 "val/accuracy": val_acc,
-                "learning_rate": lr
+                "learning_rate": lr,
+                "epoch": epoch
             }, step=epoch)
     
     def save_model(self, model, optimizer, epoch, val_loss, val_acc, is_best=False):
@@ -316,6 +375,7 @@ class MetricTracker:
         self.total = 0
         self.batches = 0
         self.start_time = time.time()
+        self.additional_metrics = {}  # Store additional metrics here
     
     def update(self, loss, outputs, targets):
         """
@@ -340,6 +400,16 @@ class MetricTracker:
             self.correct += (preds == targets).sum().item()
         self.total += targets.size(0)
     
+    def update_metric(self, name, value):
+        """
+        Update an additional metric.
+        
+        Args:
+            name (str): Metric name.
+            value (float): Metric value.
+        """
+        self.additional_metrics[name] = value
+    
     def get_metrics(self):
         """
         Get current metrics.
@@ -351,13 +421,18 @@ class MetricTracker:
         accuracy = self.correct / max(1, self.total)
         time_elapsed = time.time() - self.start_time
         
-        return {
+        metrics = {
             'loss': avg_loss,
             'accuracy': accuracy,
             'correct': self.correct,
             'total': self.total,
             'time': time_elapsed
         }
+        
+        # Add additional metrics
+        metrics.update(self.additional_metrics)
+        
+        return metrics
 
 
 def get_logger(config):

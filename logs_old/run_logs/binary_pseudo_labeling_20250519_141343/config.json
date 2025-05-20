@@ -1,0 +1,66 @@
+{
+    "data": {
+        "task": "semisupervised",
+        "task_type": "binary",
+        "batch_size": 32,
+        "num_workers": 4,
+        "pin_memory": true,
+        "image_size": 224,
+        "data_dir": "data/processed/semisupervised/binary",
+        "percentage_labeled": 50,
+        "train_val_test_split": [
+            0.7,
+            0.15,
+            0.15
+        ],
+        "augmentation": {
+            "use_augmentation": true
+        }
+    },
+    "model": {
+        "architecture": "resnet18",
+        "pretrained": true,
+        "num_classes": 2,
+        "dropout_rate": 0.5
+    },
+    "training": {
+        "device": "mps",
+        "num_epochs": 12,
+        "early_stopping_patience": 10,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "optimizer": "adam",
+        "scheduler": "reduce_on_plateau",
+        "strategy": "full",
+        "unfreeze_layers": 1,
+        "mixed_precision": false,
+        "lr_scheduler": {
+            "use_scheduler": true,
+            "type": "reduce_on_plateau",
+            "step_size": 5,
+            "gamma": 0.1
+        },
+        "pseudo_labeling": {
+            "confidence_threshold": 0.8,
+            "rampup_epochs": 10,
+            "warmup_epochs": 5,
+            "alpha": 0.5
+        }
+    },
+    "logging": {
+        "experiment_name": "binary_pseudo_labeling",
+        "log_dir": "logs",
+        "tensorboard": true,
+        "wandb": false,
+        "log_interval": 20,
+        "checkpoint_dir": "checkpoints",
+        "save_dir": "checkpoints/binary_pseudo_labeling",
+        "save_interval": 5,
+        "metrics": [
+            "accuracy",
+            "f1_score",
+            "precision",
+            "recall"
+        ]
+    }
+}

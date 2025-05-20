@@ -15,7 +15,7 @@ from torchmetrics import Accuracy, F1Score, Precision, Recall
 
 from src.utils.logger import MetricTracker
 from src.utils.metrics import compute_accuracy, compute_metrics
-from src.utils.visualization import visualize_model_predictions, plot_to_image
+from src.utils.visualization import visualize_model_predictions, plot_to_image, confusion_matrix_to_figure
 
 
 class EarlyStopping:
@@ -182,7 +182,7 @@ class BinaryTrainer:
         if isinstance(scheduler_config, str):
             scheduler_type = scheduler_config.lower()
             if scheduler_type == 'step':
-                return StepLR(self.optimizer, step_size=10, gamma=0.1)
+                return StepLR(self.optimizer, step_size=4, gamma=0.1)
             elif scheduler_type == 'cosine':
                 return CosineAnnealingLR(
                     self.optimizer,
@@ -205,7 +205,7 @@ class BinaryTrainer:
         if scheduler_type == 'step':
             return StepLR(
                 self.optimizer,
-                step_size=scheduler_config.get('step_size', 10),
+                step_size=scheduler_config.get('step_size', 3),
                 gamma=scheduler_config.get('gamma', 0.1)
             )
         elif scheduler_type == 'cosine':
@@ -400,51 +400,34 @@ class BinaryTrainer:
         # Log metrics
         self.logger.log_metrics(0, metrics, split=split)
         
-        # Create and save visualizations
-        import os
-        from datetime import datetime
-        import matplotlib.pyplot as plt
-        
-        # Create timestamp for unique filenames
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create directory if it doesn't exist
-        save_dir = os.path.join("results", "graphs", split)
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # 1. Confusion Matrix
-        from src.utils.visualization import confusion_matrix_to_figure
-        fig_cm = confusion_matrix_to_figure(metrics['confusion_matrix'], self.class_names)
-        plt.figure(fig_cm.number)
-        plt.savefig(os.path.join(save_dir, f"confusion_matrix_{timestamp}.png"))
-        plt.close(fig_cm)
-        
-        # 2. Model Predictions
-        fig_pred = visualize_model_predictions(
-            model=self.model,
-            dataloader=data_loader,
-            class_names=self.class_names,
-            device=self.device
-        )
-        plt.figure(fig_pred.number)
-        plt.savefig(os.path.join(save_dir, f"predictions_{timestamp}.png"))
-        plt.close(fig_pred)
-        
-        # 3. ROC Curve (for binary classification)
-        if 'roc_auc' in metrics:
-            from sklearn.metrics import roc_curve
-            fpr, tpr, _ = roc_curve(metrics['y_true'], metrics['y_pred'])
-            plt.figure(figsize=(8, 6))
-            plt.plot(fpr, tpr, label=f'ROC curve (AUC = {metrics["roc_auc"]:.3f})')
-            plt.plot([0, 1], [0, 1], 'k--')
-            plt.xlim([0.0, 1.0])
-            plt.ylim([0.0, 1.05])
-            plt.xlabel('False Positive Rate')
-            plt.ylabel('True Positive Rate')
-            plt.title('Receiver Operating Characteristic (ROC) Curve')
-            plt.legend(loc="lower right")
-            plt.savefig(os.path.join(save_dir, f"roc_curve_{timestamp}.png"))
+        # Try to create visualizations, but don't fail if there's an error
+        try:
+            # Create timestamp for unique filenames
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Create directory if it doesn't exist
+            save_dir = os.path.join("results", "graphs", split)
+            os.makedirs(save_dir, exist_ok=True)
+            
+            # 1. Confusion Matrix
+            fig_cm = confusion_matrix_to_figure(metrics['confusion_matrix'], self.class_names)
+            plt.figure(fig_cm.number)
+            plt.savefig(os.path.join(save_dir, f"confusion_matrix_{timestamp}.png"))
             plt.close()
+            
+            # 2. Model Predictions
+            fig_pred = visualize_model_predictions(
+                model=self.model,
+                dataloader=data_loader,
+                class_names=self.class_names,
+                device=self.device
+            )
+            plt.figure(fig_pred.number)
+            plt.savefig(os.path.join(save_dir, f"predictions_{timestamp}.png"))
+            plt.close()
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to create visualizations: {str(e)}")
         
         return metrics
     
