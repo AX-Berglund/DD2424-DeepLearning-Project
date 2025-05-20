@@ -171,14 +171,11 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
         # Get the weight for pseudo-labeled loss for current epoch
         pseudo_label_weight = self.get_pseudo_label_weight(epoch)
         
-        # Reset unlabeled data iterator at start of epoch
-        if self.has_unlabeled_data:
-            self.unlabeled_iter = iter(self.unlabeled_loader)
-        
         # Track the number of confident pseudo-labels
         total_unlabeled_samples = 0
         total_confident_samples = 0
         
+        # First, process all labeled data
         for batch_idx, (labeled_data, labels) in enumerate(self.train_loader):
             # Move labeled data to device
             labeled_data = labeled_data.to(self.device)
@@ -187,7 +184,7 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             # Zero gradients efficiently
             self.optimizer.zero_grad(set_to_none=True)
             
-            # Step 1: Forward pass for labeled data
+            # Forward pass for labeled data
             labeled_outputs = self.model(labeled_data)
             labeled_loss = self.criterion(labeled_outputs, labels)
             
@@ -197,42 +194,7 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
             # Initialize combined loss to labeled loss
             total_loss = labeled_loss
             
-            # Step 2: Process unlabeled data if available and we're using pseudo-labels
-            if self.has_unlabeled_data and pseudo_label_weight > 0:
-                unlabeled_data = self.get_next_unlabeled_batch()
-                
-                if unlabeled_data is not None:
-                    # Generate pseudo-labels
-                    pseudo_labels, confidence_mask = self.generate_pseudo_labels(unlabeled_data)
-                    
-                    # Update statistics
-                    batch_confident = confidence_mask.sum().item()
-                    total_confident_samples += batch_confident
-                    total_unlabeled_samples += len(unlabeled_data)
-                    
-                    # Log pseudo-labeling stats
-                    self.logger.detailed(
-                        f"Batch {batch_idx}: Pseudo-labeling stats - "
-                        f"Confident samples: {batch_confident}/{len(unlabeled_data)} "
-                        f"(Confidence threshold: {self.confidence_threshold})"
-                    )
-                    
-                    # Compute loss for confident pseudo-labeled samples
-                    if confidence_mask.any():
-                        # Forward pass for unlabeled data (now using train mode)
-                        unlabeled_outputs = self.model(unlabeled_data)
-                        
-                        # Apply confidence mask to both outputs and pseudo-labels
-                        masked_outputs = unlabeled_outputs[confidence_mask]
-                        masked_pseudo_labels = pseudo_labels[confidence_mask]
-                        
-                        # Compute loss for confident pseudo-labeled data
-                        if masked_outputs.numel() > 0:  # Check there are confident samples
-                            pseudo_loss = self.criterion(masked_outputs, masked_pseudo_labels)
-                            # Add weighted pseudo-loss to total loss
-                            total_loss = labeled_loss + pseudo_label_weight * pseudo_loss
-            
-            # Step 3: Backward pass and optimization
+            # Backward pass and optimization for labeled data
             total_loss.backward()
             self.optimizer.step()
             
@@ -246,6 +208,79 @@ class BinaryPseudoLabelingTrainer(BinaryTrainer):
                     f"({100. * batch_idx / len(self.train_loader):.0f}%)]\t"
                     f"Loss: {total_loss.item():.6f}"
                 )
+        
+        # Then, process all unlabeled data if we're using pseudo-labels
+        if self.has_unlabeled_data and pseudo_label_weight > 0:
+            # Reset unlabeled data iterator
+            self.unlabeled_iter = iter(self.unlabeled_loader)
+            unlabeled_batch_idx = 0
+            
+            # Process all unlabeled data
+            while True:
+                try:
+                    unlabeled_data = self.get_next_unlabeled_batch()
+                    if unlabeled_data is None:
+                        self.logger.detailed("No more unlabeled data available")
+                        break
+                        
+                    # Generate pseudo-labels
+                    pseudo_labels, confidence_mask = self.generate_pseudo_labels(unlabeled_data)
+                    
+                    # Update statistics
+                    batch_confident = confidence_mask.sum().item()
+                    total_confident_samples += batch_confident
+                    total_unlabeled_samples += len(unlabeled_data)
+                    
+                    # Log pseudo-labeling stats with batch index
+                    self.logger.detailed(
+                        f"Unlabeled Batch {unlabeled_batch_idx}: Pseudo-labeling stats - "
+                        f"Confident samples: {batch_confident}/{len(unlabeled_data)} "
+                        f"(Confidence threshold: {self.confidence_threshold})"
+                    )
+                    
+                    # Compute loss for confident pseudo-labeled samples
+                    if confidence_mask.any():
+                        # Zero gradients efficiently
+                        self.optimizer.zero_grad(set_to_none=True)
+                        
+                        # Forward pass for unlabeled data
+                        unlabeled_outputs = self.model(unlabeled_data)
+                        
+                        # Apply confidence mask to both outputs and pseudo-labels
+                        masked_outputs = unlabeled_outputs[confidence_mask]
+                        masked_pseudo_labels = pseudo_labels[confidence_mask]
+                        
+                        # Compute loss for confident pseudo-labeled data
+                        if masked_outputs.numel() > 0:  # Check there are confident samples
+                            pseudo_loss = self.criterion(masked_outputs, masked_pseudo_labels)
+                            # Add weighted pseudo-loss to total loss
+                            total_loss = pseudo_label_weight * pseudo_loss
+                            
+                            # Backward pass and optimization for pseudo-labeled data
+                            total_loss.backward()
+                            self.optimizer.step()
+                            
+                            # Update metrics - ensure outputs and labels are properly shaped
+                            metrics.update(
+                                total_loss.item(),
+                                masked_outputs.unsqueeze(1) if masked_outputs.dim() == 1 else masked_outputs,
+                                masked_pseudo_labels.unsqueeze(1) if masked_pseudo_labels.dim() == 1 else masked_pseudo_labels
+                            )
+                        
+                    # Increment batch counter
+                    unlabeled_batch_idx += 1
+                    
+                    # Add a safety check to prevent infinite loops
+                    if unlabeled_batch_idx >= len(self.unlabeled_loader):
+                        self.logger.detailed(f"Processed all {unlabeled_batch_idx} unlabeled batches")
+                        break
+                    
+                except StopIteration:
+                    self.logger.detailed(f"Finished processing {unlabeled_batch_idx} unlabeled batches")
+                    break
+                except Exception as e:
+                    self.logger.warning(f"Error processing unlabeled batch {unlabeled_batch_idx}: {str(e)}")
+                    break
         
         # Log pseudo-labeling statistics for the epoch
         if self.has_unlabeled_data:
