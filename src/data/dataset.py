@@ -84,28 +84,83 @@ class BinaryPetDataset(PetDataset):
     """Dataset for binary classification (cat vs dog)."""
     
     def __init__(self, root_dir, split='train', transform=None, percentage_labeled=None):
-        super().__init__(root_dir, split, 'binary', transform, percentage_labeled)
+        if split == 'unlabeled':
+            # Handle flat directory of images for unlabeled split
+            self.root_dir = Path(root_dir)
+            self.split = split
+            self.transform = transform
+            self.task = 'binary'
+            self.classes = ['cat', 'dog']
+            self.class_to_idx = {'cat': 0, 'dog': 1}
+            # All images in the directory, assign dummy label -1
+            self.samples = []
+            for img_name in os.listdir(self.root_dir):
+                if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    img_path = os.path.join(self.root_dir, img_name)
+                    if os.path.exists(img_path):  # Only add files that exist
+                        self.samples.append((img_path, -1))
+        else:
+            super().__init__(root_dir, split, 'binary', transform, percentage_labeled)
+            # Ensure classes is always ['cat', 'dog'] for consistency
+            if self.classes != ['cat', 'dog']:
+                # If folder names are different, update class mapping
+                cat_idx = -1
+                dog_idx = -1
+                for cls_name, idx in self.class_to_idx.items():
+                    if 'cat' in cls_name.lower():
+                        cat_idx = idx
+                    elif 'dog' in cls_name.lower():
+                        dog_idx = idx
+                # Update samples with correct binary labels
+                if cat_idx != -1 and dog_idx != -1:
+                    self.samples = [(path, 0 if label == cat_idx else 1) 
+                                    for path, label in self.samples
+                                    if os.path.exists(path)]  # Only keep files that exist
+                    # Update class mapping
+                    self.classes = ['cat', 'dog']
+                    self.class_to_idx = {'cat': 0, 'dog': 1}
+    
+    def __getitem__(self, idx):
+        """
+        Get a sample from the dataset.
         
-        # Ensure classes is always ['cat', 'dog'] for consistency
-        if self.classes != ['cat', 'dog']:
-            # If folder names are different, update class mapping
-            cat_idx = -1
-            dog_idx = -1
+        Args:
+            idx (int): Index of the sample.
             
-            for cls_name, idx in self.class_to_idx.items():
-                if 'cat' in cls_name.lower():
-                    cat_idx = idx
-                elif 'dog' in cls_name.lower():
-                    dog_idx = idx
-            
-            # Update samples with correct binary labels
-            if cat_idx != -1 and dog_idx != -1:
-                self.samples = [(path, 0 if label == cat_idx else 1) 
-                                for path, label in self.samples]
-                
-                # Update class mapping
-                self.classes = ['cat', 'dog']
-                self.class_to_idx = {'cat': 0, 'dog': 1}
+        Returns:
+            tuple: (image, label) where label is the class index.
+        """
+        img_path, label = self.samples[idx]
+        
+        # Verify file exists before trying to load it
+        if not os.path.exists(img_path):
+            # If file doesn't exist, try to find it in the source directory
+            if self.split == 'unlabeled':
+                source_dir = Path('data/processed/semisupervised/binary/1_percent_labeled/unlabeled/images')
+                src_path = source_dir / Path(img_path).name
+                if src_path.exists():
+                    # Copy the file back
+                    import shutil
+                    shutil.copy2(src_path, img_path)
+                else:
+                    raise FileNotFoundError(f"Image file not found: {img_path} and source file not found: {src_path}")
+        
+        # Load image
+        image = Image.open(img_path).convert('RGB')
+        
+        # Apply transformations if provided
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, label
+    
+    def __len__(self):
+        """Return the total number of samples."""
+        return len(self.samples)
+    
+    def update_samples(self):
+        """Update the samples list to only include files that exist."""
+        self.samples = [(path, label) for path, label in self.samples if os.path.exists(path)]
 
 
 class MultiClassPetDataset(PetDataset):

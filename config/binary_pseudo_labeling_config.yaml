@@ -6,7 +6,7 @@ data:
   pin_memory: true
   image_size: 224
   data_dir: 'data/processed/semisupervised/binary'
-  percentage_labeled: 1  # Can be 100, 50, 10, or 1
+  percentage_labeled: 50 # Can be 100, 50, 10, or 1
   train_val_test_split: [0.7, 0.15, 0.15]
   augmentation:
     use_augmentation: true
@@ -20,7 +20,7 @@ model:
 training:
   device: 'mps'
   num_epochs: 15
-  learning_rate: 0.001
+  learning_rate: 0.0001
   weight_decay: 0.0001
   optimizer: 'adam'
   scheduler: 'step'
@@ -38,22 +38,25 @@ training:
   # Learning rate scheduler
   lr_scheduler:
     use_scheduler: true
-    type: "step"          # Options: step, cosine, reduce_on_plateau
-    step_size: 4          # For StepLR (number of epochs to
-    gamma: 0.1            # Factor to reduce LR
+    type: "step"
+    step_size: 3
+    gamma: 0.5
+    min_lr: 0.000001
+    milestones: [5, 8, 11]
+    warmup_epochs: 2
 
   pseudo_labeling:
-    confidence_threshold: 0.8
+    confidence_threshold: 0.96
     rampup_epochs: 8
     warmup_epochs: 5
     alpha: 0.5  # Weight for pseudo-labeled loss
 
 logging:
-  experiment_name: "binary_pseudo_label_1"
+  experiment_name: "binary_pseudo_label_50"
   log_dir: "logs"
   tensorboard: true
   wandb: true
-  wandb_project: "binary-pseudo-runs"
+  wandb_project: "results-binary-pseudo-runs"
   wandb_entity: "axelberglund98-kth-royal-institute-of-technology"
   log_interval: 20
   checkpoint_dir: "checkpoints"  # Added checkpoint directory configuration
